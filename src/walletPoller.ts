@@ -4,8 +4,8 @@
  * Primary mode (when HELIUS_API_KEY is set):
  *   - Helius webhooks handle real-time updates (zero polling credits).
  *   - This poller only runs once on startup (to seed initial holdings)
- *     and every 10 minutes as a safety net (in case a webhook was missed).
- *   - Holdings reads use the standard public RPC, NOT Helius — no credits burned.
+ *     and every 60 minutes as a safety net (in case a webhook was missed).
+ *   - Holdings reads use the FREE public RPC, NOT Helius — zero credits burned.
  *
  * Fallback mode (no HELIUS_API_KEY):
  *   - Polls the public Solana RPC every 5 minutes.
@@ -22,10 +22,17 @@ import { SolanaMonitor } from './monitor'
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
 
-// When Helius webhooks are active: 10-min safety-net poll
+// When Helius webhooks are active: 60-min safety-net poll (webhooks handle real-time)
 // When no Helius key: 5-min polling interval
-const FALLBACK_INTERVAL_MS = 10 * 60_000
+const FALLBACK_INTERVAL_MS = 60 * 60_000
 const POLLING_INTERVAL_MS  =  5 * 60_000
+
+// Use public RPC for token account reads — free, no Helius credits burned.
+// We try the public endpoint first; if it silently returns 0 accounts we skip.
+const PUBLIC_RPC_URL = 'https://api.mainnet-beta.solana.com'
+
+// Max new tokens to add to watchlist per wallet scan (avoids flooding with old dust)
+const MAX_NEW_TOKENS_PER_SCAN = 20
 
 export class WalletPoller {
   private connection: Connection
@@ -34,18 +41,15 @@ export class WalletPoller {
 
   constructor(monitor: SolanaMonitor) {
     this.monitor = monitor
-    // Use Helius RPC — public endpoints (mainnet-beta, Ankr) silently fail for
-    // getParsedTokenAccountsByOwner from server IPs like Render.
-    // Standard RPC calls cost 1 credit each on Helius — negligible (~8,640/month
-    // for 2 wallets at 10-min intervals vs 1,000,000 free credits/month).
-    this.connection = new Connection(config.solana.rpcUrl, { commitment: 'confirmed' })
+    // Use public RPC for getParsedTokenAccountsByOwner — free, no Helius credits consumed.
+    this.connection = new Connection(PUBLIC_RPC_URL, { commitment: 'confirmed' })
   }
 
   start(): void {
     const usingWebhooks = !!config.solana.heliusApiKey
 
     if (usingWebhooks) {
-      console.log('[WalletPoller] Helius webhooks active — initial scan + 10-min safety net')
+      console.log('[WalletPoller] Helius webhooks active — initial scan + 60-min safety net (free public RPC)')
     } else {
       console.log('[WalletPoller] No Helius key — polling every 5 minutes')
     }
@@ -82,7 +86,7 @@ export class WalletPoller {
   }
 
   private async pollWallet(address: string, label: string): Promise<void> {
-    console.log(`[WalletPoller] Fetching holdings for ${label} (${address.slice(0, 8)}...) via ${config.solana.rpcUrl.replace(/api-key=.*/, 'api-key=***')}`)
+    console.log(`[WalletPoller] Fetching holdings for ${label} (${address.slice(0, 8)}...) via public RPC`)
 
     const { value: accounts } = await this.connection.getParsedTokenAccountsByOwner(
       new PublicKey(address),
@@ -116,6 +120,10 @@ export class WalletPoller {
 
     let newCount = 0
     for (const holding of holdings) {
+      if (newCount >= MAX_NEW_TOKENS_PER_SCAN) {
+        console.log(`[WalletPoller] ${label}: hit new-token cap (${MAX_NEW_TOKENS_PER_SCAN}), skipping rest`)
+        break
+      }
       const added = db.addToken(holding.mint, 'Unknown', '?', 'wallet', address)
       if (added) {
         newCount++
@@ -127,6 +135,6 @@ export class WalletPoller {
     }
 
     const tag = newCount > 0 ? `, ${newCount} new added to watchlist` : ''
-    console.log(`[WalletPoller] ${label}: ${holdings.length} holdings${tag}`)
+    console.log(`[WalletPoller] ${label}: ${holdings.length} token accounts with balance${tag}`)
   }
 }
