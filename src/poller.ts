@@ -71,12 +71,13 @@ export class DexScreenerPoller extends EventEmitter {
           const mint = pair.baseToken?.address
           if (!mint || !mints.includes(mint)) continue
 
-          // Update metadata in DB
+          // Prefer circulating marketCap over FDV — they're very different for
+          // tokens where not all supply is in circulation
           db.updateTokenMetadata(mint, {
             name: pair.baseToken.name,
             symbol: pair.baseToken.symbol,
             priceUsd: pair.priceUsd,
-            marketCap: pair.fdv ?? pair.marketCap,
+            marketCap: pair.marketCap ?? pair.fdv,
           })
 
           // Emit event with full pair data for alert logic

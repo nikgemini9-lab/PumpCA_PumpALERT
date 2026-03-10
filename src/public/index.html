@@ -627,7 +627,7 @@
     document.getElementById('login-screen').style.display = 'none'
     document.getElementById('app').style.display = 'block'
     refresh()
-    refreshTimer = setInterval(refresh, 30000)
+    refreshTimer = setInterval(refresh, 15000)
   }
 
   document.getElementById('login-input').addEventListener('keydown', e => {
@@ -684,7 +684,7 @@
 
   function startSyncTimer() {
     if (window._syncCountdown) clearInterval(window._syncCountdown)
-    let secs = 30
+    let secs = 15
     window._syncCountdown = setInterval(() => {
       secs--
       if (secs > 0) {
@@ -751,8 +751,8 @@
           <div class="token-mint">${h.mint.slice(0,20)}...</div>
         </div>
         <div class="token-price">
-          <div class="price">${h.price_usd ? '$' + h.price_usd : '–'}</div>
-          <div class="mc">${h.market_cap ? fmtNum(h.market_cap) : '–'}</div>
+          <div class="price">${h.price_usd ? '$' + fmtPrice(h.price_usd) : '–'}</div>
+          <div class="mc">${h.market_cap ? 'MC ' + fmtNum(h.market_cap) : '–'}</div>
         </div>
         <div style="margin-left:4px">
           <button class="btn-remove" onclick="addToWatchlist('${h.mint}')" title="Add to watchlist">+Watch</button>
@@ -825,8 +825,8 @@
           <div class="token-mint">${t.mint.slice(0,20)}...</div>
         </div>
         <div class="token-price">
-          <div class="price">${t.price_usd ? '$' + t.price_usd : '–'}</div>
-          <div class="mc">${t.market_cap ? fmtNum(t.market_cap) : '–'}</div>
+          <div class="price">${t.price_usd ? '$' + fmtPrice(t.price_usd) : '–'}</div>
+          <div class="mc">${t.market_cap ? 'MC ' + fmtNum(t.market_cap) : '–'}</div>
         </div>
         <button class="btn-remove" onclick="removeToken('${t.mint}')">✕</button>
       </div>
@@ -915,6 +915,17 @@
     if (n >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M'
     if (n >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K'
     return '$' + n.toFixed(0)
+  }
+
+  // Format prices that may be very small (e.g. $0.00000741)
+  function fmtPrice(p) {
+    const n = parseFloat(p)
+    if (isNaN(n)) return p
+    if (n === 0) return '0'
+    if (n >= 1) return n.toFixed(4)
+    if (n >= 0.01) return n.toFixed(6)
+    // Use toPrecision for very tiny values to show 4 significant figures
+    return n.toPrecision(4)
   }
 
   function timeAgo(ts) {
