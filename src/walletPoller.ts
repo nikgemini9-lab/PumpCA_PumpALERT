@@ -57,6 +57,11 @@ export class WalletPoller {
     this.timer = setInterval(() => this.pollAll(), interval)
   }
 
+  /** Public method to refresh a single wallet on demand */
+  async refreshWallet(address: string, label: string): Promise<void> {
+    await this.pollWallet(address, label)
+  }
+
   stop(): void {
     if (this.timer) {
       clearInterval(this.timer)
@@ -77,10 +82,14 @@ export class WalletPoller {
   }
 
   private async pollWallet(address: string, label: string): Promise<void> {
+    console.log(`[WalletPoller] Fetching holdings for ${label} (${address.slice(0, 8)}...) via ${config.solana.rpcUrl.replace(/api-key=.*/, 'api-key=***')}`)
+
     const { value: accounts } = await this.connection.getParsedTokenAccountsByOwner(
       new PublicKey(address),
       { programId: TOKEN_PROGRAM_ID }
     )
+
+    console.log(`[WalletPoller] RPC returned ${accounts.length} token accounts for ${label}`)
 
     const holdings: Array<{ mint: string; amount: number }> = []
 
@@ -91,6 +100,15 @@ export class WalletPoller {
       const amount = parsed.tokenAmount?.uiAmount as number | null
       if (amount && amount > 0) {
         holdings.push({ mint, amount })
+      }
+    }
+
+    // Don't wipe existing holdings if RPC returned nothing — likely a silent failure
+    if (holdings.length === 0 && accounts.length === 0) {
+      const existing = db.getWalletHoldings(address)
+      if (existing.length > 0) {
+        console.warn(`[WalletPoller] RPC returned 0 accounts for ${label} but DB has ${existing.length} holdings — skipping update (likely RPC failure)`)
+        return
       }
     }
 

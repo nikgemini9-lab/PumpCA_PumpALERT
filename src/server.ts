@@ -212,6 +212,11 @@ export function startServer(
     // Sync Helius webhook to include the new address
     syncWebhook().catch(err => console.error('[Server] Webhook sync error:', err))
 
+    // Immediately poll the new wallet so holdings appear right away
+    walletPoller.refreshWallet(address.trim(), ownerName).catch(err =>
+      console.error('[Server] Initial wallet poll error:', err)
+    )
+
     res.status(201).json({ ok: true, address: address.trim(), label: ownerName })
   })
 
