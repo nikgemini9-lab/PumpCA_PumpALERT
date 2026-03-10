@@ -17,6 +17,7 @@
  */
 
 import { Connection, PublicKey } from '@solana/web3.js'
+import axios from 'axios'
 import { config } from './config'
 import * as db from './database'
 import { SolanaMonitor } from './monitor'
@@ -55,16 +56,22 @@ export class WalletPoller {
       console.log('[WalletPoller] No Helius key — polling every 5 minutes')
     }
 
-    // Initial seed after system settles
+    // Initial seed after system settles; also resolve any stale Unknown metadata
     setTimeout(() => this.pollAll(), 8_000)
+    setTimeout(() => this.resolveUnknownMetadata(), 12_000)
 
     const interval = usingWebhooks ? FALLBACK_INTERVAL_MS : POLLING_INTERVAL_MS
     this.timer = setInterval(() => this.pollAll(), interval)
   }
 
-  /** Public method to refresh a single wallet on demand */
+  /** Public: refresh a single wallet on demand */
   async refreshWallet(address: string, label: string): Promise<void> {
     await this.pollWallet(address, label)
+  }
+
+  /** Public: resolve names for all Unknown tokens (called by Rescan) */
+  async resolveMetadata(): Promise<void> {
+    await this.resolveUnknownMetadata()
   }
 
   stop(): void {
@@ -141,5 +148,50 @@ export class WalletPoller {
 
     const tag = newCount > 0 ? `, ${newCount} new added to watchlist` : ''
     console.log(`[WalletPoller] ${label}: ${holdings.length} token accounts with balance${tag}`)
+
+    // Resolve names/symbols for any tokens still showing as Unknown
+    await this.resolveUnknownMetadata()
+  }
+
+  /**
+   * Fetches on-chain Metaplex metadata via Helius DAS for tokens that are
+   * still stored as Unknown / ? — covers tokens with no DexScreener listing.
+   */
+  async resolveUnknownMetadata(): Promise<void> {
+    if (!config.solana.heliusApiKey) return
+
+    const unknown = db.getAllTokens().filter(t => t.name === 'Unknown' || t.symbol === '?')
+    if (unknown.length === 0) return
+
+    const mints = unknown.map(t => t.mint)
+    // DAS getAssetBatch supports up to 1000 IDs per call
+    const BATCH = 1000
+    for (let i = 0; i < mints.length; i += BATCH) {
+      const batch = mints.slice(i, i + BATCH)
+      try {
+        const res = await axios.post<{ result: any[] }>(
+          config.solana.rpcUrl,
+          { jsonrpc: '2.0', id: 'meta', method: 'getAssetBatch', params: { ids: batch } },
+          { timeout: 15_000 }
+        )
+        const assets: any[] = res.data?.result ?? []
+        for (const asset of assets) {
+          const mint = asset?.id as string | undefined
+          if (!mint) continue
+          const meta = asset?.content?.metadata
+          const name: string | undefined = meta?.name?.trim()
+          const symbol: string | undefined = meta?.symbol?.trim()
+          if ((name && name !== 'Unknown') || (symbol && symbol !== '?')) {
+            db.updateTokenMetadata(mint, {
+              name: name || undefined,
+              symbol: symbol || undefined,
+            })
+          }
+        }
+        console.log(`[WalletPoller] Resolved metadata for ${assets.length} tokens via Helius DAS`)
+      } catch (err: any) {
+        console.warn(`[WalletPoller] DAS metadata fetch failed: ${err?.message ?? err}`)
+      }
+    }
   }
 }
