@@ -1,12 +1,18 @@
 /**
  * Wallet Holdings Poller
  *
- * Every 60 seconds, fetches all SPL token holdings for each tracked wallet
- * using the Solana RPC. New holdings are automatically added to the watchlist
- * (source='wallet') so the existing alert system picks them up.
+ * Primary mode (when HELIUS_API_KEY is set):
+ *   - Helius webhooks handle real-time updates (zero polling credits).
+ *   - This poller only runs once on startup (to seed initial holdings)
+ *     and every 10 minutes as a safety net (in case a webhook was missed).
+ *   - Holdings reads use the standard public RPC, NOT Helius — no credits burned.
  *
- * When a wallet-sourced token pumps, the alert goes only to that wallet's
- * owner (handled in alerts.ts via the walletSource field).
+ * Fallback mode (no HELIUS_API_KEY):
+ *   - Polls the public Solana RPC every 5 minutes.
+ *   - No credits consumed — free public endpoint.
+ *
+ * refreshWallet(address) is called directly by the webhook handler for
+ * immediate updates when Helius fires.
  */
 
 import { Connection, PublicKey } from '@solana/web3.js'
@@ -15,7 +21,11 @@ import * as db from './database'
 import { SolanaMonitor } from './monitor'
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
-const POLL_INTERVAL_MS = 60_000
+
+// When Helius webhooks are active: 10-min safety-net poll
+// When no Helius key: 5-min polling interval
+const FALLBACK_INTERVAL_MS = 10 * 60_000
+const POLLING_INTERVAL_MS  =  5 * 60_000
 
 export class WalletPoller {
   private connection: Connection
@@ -24,14 +34,27 @@ export class WalletPoller {
 
   constructor(monitor: SolanaMonitor) {
     this.monitor = monitor
-    this.connection = new Connection(config.solana.rpcUrl, { commitment: 'confirmed' })
+    // Always use public RPC for holdings reads — saves Helius credits
+    const rpc = config.solana.heliusApiKey
+      ? 'https://api.mainnet-beta.solana.com'
+      : config.solana.rpcUrl
+    this.connection = new Connection(rpc, { commitment: 'confirmed' })
   }
 
   start(): void {
-    console.log('[WalletPoller] Starting wallet holdings poller (60s interval)')
-    // First poll after a short delay to let the system settle
-    setTimeout(() => this.poll(), 5_000)
-    this.timer = setInterval(() => this.poll(), POLL_INTERVAL_MS)
+    const usingWebhooks = !!config.solana.heliusApiKey
+
+    if (usingWebhooks) {
+      console.log('[WalletPoller] Helius webhooks active — initial scan + 10-min safety net (public RPC, no credits)')
+    } else {
+      console.log('[WalletPoller] No Helius key — polling public RPC every 5 minutes')
+    }
+
+    // Initial seed after system settles
+    setTimeout(() => this.pollAll(), 8_000)
+
+    const interval = usingWebhooks ? FALLBACK_INTERVAL_MS : POLLING_INTERVAL_MS
+    this.timer = setInterval(() => this.pollAll(), interval)
   }
 
   stop(): void {
@@ -41,14 +64,16 @@ export class WalletPoller {
     }
   }
 
-  async pollNow(): Promise<void> {
-    await this.poll()
+  /** Called by the Helius webhook handler for immediate single-wallet refresh. */
+  async refreshWallet(address: string): Promise<void> {
+    const wallet = db.getWallet(address)
+    if (!wallet) return
+    await this.pollWallet(wallet.address, wallet.label)
   }
 
-  private async poll(): Promise<void> {
+  private async pollAll(): Promise<void> {
     const wallets = db.getWallets()
     if (wallets.length === 0) return
-
     for (const wallet of wallets) {
       try {
         await this.pollWallet(wallet.address, wallet.label)
@@ -76,26 +101,21 @@ export class WalletPoller {
       }
     }
 
-    // Persist holdings snapshot
     db.setWalletHoldings(address, holdings)
 
-    // Auto-add new holdings to the watchlist so they get monitored
     let newCount = 0
     for (const holding of holdings) {
       const added = db.addToken(holding.mint, 'Unknown', '?', 'wallet', address)
       if (added) {
         newCount++
-        console.log(`[WalletPoller] Auto-added ${holding.mint.slice(0, 8)}... from ${label}'s wallet`)
+        console.log(`[WalletPoller] New holding from ${label}: ${holding.mint.slice(0, 8)}...`)
         this.monitor.subscribeToToken(holding.mint).catch(err => {
           console.error(`[WalletPoller] Subscribe error for ${holding.mint.slice(0, 8)}...:`, err)
         })
       }
     }
 
-    if (newCount > 0) {
-      console.log(`[WalletPoller] ${label}: ${holdings.length} holdings, ${newCount} new tokens added to watchlist`)
-    } else {
-      console.log(`[WalletPoller] ${label}: ${holdings.length} holdings (no new)`)
-    }
+    const tag = newCount > 0 ? `, ${newCount} new added to watchlist` : ''
+    console.log(`[WalletPoller] ${label}: ${holdings.length} holdings${tag}`)
   }
 }

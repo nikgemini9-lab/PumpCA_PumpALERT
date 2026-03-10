@@ -50,6 +50,11 @@ export function initDatabase(): void {
       PRIMARY KEY (wallet_address, mint)
     );
 
+    CREATE TABLE IF NOT EXISTS kv_store (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_alerts_mint_sent ON alerts(mint, sent_at);
     CREATE INDEX IF NOT EXISTS idx_tokens_active ON tokens(active);
     CREATE INDEX IF NOT EXISTS idx_holdings_wallet ON wallet_holdings(wallet_address);
@@ -283,6 +288,24 @@ function rowToWallet(row: any): Wallet {
     ownerChatId: row.owner_chat_id,
     addedAt: row.added_at,
   }
+}
+
+// ── Key-Value Store (for internal config like webhook IDs) ────────────────────
+
+export function getKV(key: string): string | null {
+  const row = db.prepare('SELECT value FROM kv_store WHERE key = ?').get(key) as { value: string } | undefined
+  return row ? row.value : null
+}
+
+export function setKV(key: string, value: string): void {
+  db.prepare(`
+    INSERT INTO kv_store (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, value)
+}
+
+export function deleteKV(key: string): void {
+  db.prepare('DELETE FROM kv_store WHERE key = ?').run(key)
 }
 
 export function closeDatabase(): void {

@@ -63,5 +63,6 @@ export const config = {
   dashboard: {
     secret: optional('DASHBOARD_SECRET', ''),
   },
+  appUrl: optional('APP_URL', '').replace(/\/$/, ''), // e.g. https://pumpca-pumpalert.onrender.com
   port: optionalNumber('PORT', 3000),
 }

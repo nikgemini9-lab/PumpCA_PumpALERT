@@ -21,6 +21,7 @@ import { config } from './config'
 import * as db from './database'
 import { SolanaMonitor } from './monitor'
 import { MonitorStatus } from './types'
+import { syncWebhook } from './heliusWebhook'
 
 export function setupBot(
   bot: TelegramBot,
@@ -267,13 +268,16 @@ export function setupBot(
       return
     }
 
+    // Sync Helius webhook to include the new address
+    syncWebhook().catch(err => console.error('[Bot] Webhook sync error:', err))
+
     await reply(
       msg,
       [
         `✅ <b>Wallet added for ${escHtml(ownerLabel)}:</b>`,
         `<code>${address}</code>`,
         ``,
-        `Holdings will be scanned every 60s and pump alerts sent automatically.`,
+        `Holdings will be detected in real-time via Helius webhook.`,
       ].join('\n')
     )
   })
@@ -293,6 +297,9 @@ export function setupBot(
       await reply(msg, `ℹ️ Wallet not found: <code>${address}</code>`)
       return
     }
+
+    // Sync Helius webhook to remove the address
+    syncWebhook().catch(err => console.error('[Bot] Webhook sync error:', err))
 
     await reply(msg, `🗑 Stopped tracking wallet <code>${address}</code>`)
   })

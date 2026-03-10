@@ -16,12 +16,27 @@ services:
         value: production
       - key: DB_PATH
         value: /opt/render/project/src/data/pump_alert.db
+      # ── Telegram ─────────────────────────────────────────────────────────────
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: TELEGRAM_CHAT_ID
+      - key: NIK_CHAT_ID         # Nik's Telegram chat ID (send /start to get it)
         sync: false
+      - key: JOSH_CHAT_ID        # Josh's Telegram chat ID
+        sync: false
+      - key: TELEGRAM_CHAT_ID    # Legacy fallback (if NIK_CHAT_ID not set)
+        sync: false
+
+      # ── Solana / Helius ───────────────────────────────────────────────────────
       - key: HELIUS_API_KEY
         sync: false
+
+      # ── Dashboard & Helius Webhooks ───────────────────────────────────────────
+      - key: APP_URL
+        value: https://pumpca-pumpalert.onrender.com
+      - key: DASHBOARD_SECRET    # Web dashboard password + Helius webhook auth
+        sync: false
+
+      # ── Alert thresholds ──────────────────────────────────────────────────────
       - key: PRICE_CHANGE_ALERT_PERCENT
         value: "15"
       - key: BUY_COUNT_ALERT

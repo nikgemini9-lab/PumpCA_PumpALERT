@@ -15,6 +15,9 @@
  *   DELETE /api/wallets/:address  — remove wallet
  *   GET  /api/alerts              — recent 50 alerts
  *   GET  /api/users               — configured user names (no chat IDs)
+ *
+ * Webhook (no auth check — Helius uses its own authHeader mechanism):
+ *   POST /api/webhook/helius      — receives Helius enhanced transaction events
  */
 
 import express, { Request, Response, NextFunction } from 'express'
@@ -23,8 +26,14 @@ import { config } from './config'
 import * as db from './database'
 import { MonitorStatus } from './types'
 import { SolanaMonitor } from './monitor'
+import { WalletPoller } from './walletPoller'
+import { syncWebhook, getAffectedWallets } from './heliusWebhook'
 
-export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonitor): void {
+export function startServer(
+  getStatus: () => MonitorStatus,
+  monitor: SolanaMonitor,
+  walletPoller: WalletPoller
+): void {
   const app = express()
   app.use(express.json())
 
@@ -37,20 +46,48 @@ export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonit
     res.status(200).json({ status: 'ok', ts: new Date().toISOString() })
   })
 
-  // ── Auth middleware for /api/* ────────────────────────────────────────────
+  // ── Helius webhook receiver (no dashboard auth — uses authHeader from Helius) ──
+  app.post('/api/webhook/helius', (req: Request, res: Response) => {
+    // Verify the authHeader Helius was configured with (equals DASHBOARD_SECRET if set)
+    if (config.dashboard.secret) {
+      const provided = req.headers.authorization
+      if (provided !== config.dashboard.secret) {
+        res.status(401).send()
+        return
+      }
+    }
+
+    // Always respond 200 immediately — Helius retries on non-2xx
+    res.status(200).send()
+
+    try {
+      const transactions = Array.isArray(req.body) ? req.body : [req.body]
+      const affected = getAffectedWallets(transactions)
+
+      for (const walletAddr of affected) {
+        console.log(`[Webhook] Activity on wallet ${walletAddr.slice(0, 8)}... — refreshing holdings`)
+        walletPoller.refreshWallet(walletAddr).catch(err => {
+          console.error('[Webhook] Holdings refresh error:', err?.message)
+        })
+      }
+    } catch (err) {
+      console.error('[Webhook] Parse error:', err)
+    }
+  })
+
+  // ── Auth middleware for /api/* (excluding webhook above) ──────────────────
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    // Webhook route already handled above
+    if (req.path === '/webhook/helius') return next()
+
     const secret = config.dashboard.secret
-    if (!secret) return next() // no auth configured
+    if (!secret) return next()
 
     const authHeader = req.headers.authorization
     const queryKey = req.query.key as string | undefined
-
-    const provided = authHeader?.startsWith('Bearer ')
-      ? authHeader.slice(7)
-      : queryKey
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : queryKey
 
     if (provided === secret) return next()
-
     res.status(401).json({ error: 'Unauthorized' })
   })
 
@@ -67,6 +104,7 @@ export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonit
       onchain_subscriptions: status.onchainSubscriptions,
       last_poll_at: status.lastPollAt ? new Date(status.lastPollAt).toISOString() : null,
       users: config.telegram.users.map(u => u.name),
+      webhook_active: !!config.solana.heliusApiKey && !!config.appUrl,
     })
   })
 
@@ -135,7 +173,7 @@ export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonit
   })
 
   // ── POST /api/wallets ─────────────────────────────────────────────────────
-  app.post('/api/wallets', (req: Request, res: Response) => {
+  app.post('/api/wallets', async (req: Request, res: Response) => {
     const { label, address } = req.body as { label?: string; address?: string }
 
     if (!label || !address) {
@@ -146,10 +184,8 @@ export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonit
     const ownerName = label.toLowerCase().trim()
     const owner = config.telegram.users.find(u => u.name.toLowerCase() === ownerName)
     if (!owner) {
-      const knownNames = config.telegram.users.map(u => u.name).join(', ') || 'none'
-      res.status(400).json({
-        error: `Unknown owner "${label}". Configured users: ${knownNames}`,
-      })
+      const known = config.telegram.users.map(u => u.name).join(', ') || 'none configured'
+      res.status(400).json({ error: `Unknown owner "${label}". Configured users: ${known}` })
       return
     }
 
@@ -159,23 +195,29 @@ export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonit
       return
     }
 
+    // Sync Helius webhook to include the new address
+    syncWebhook().catch(err => console.error('[Server] Webhook sync error:', err))
+
     res.status(201).json({ ok: true, address: address.trim(), label: ownerName })
   })
 
   // ── DELETE /api/wallets/:address ──────────────────────────────────────────
-  app.delete('/api/wallets/:address', (req: Request, res: Response) => {
+  app.delete('/api/wallets/:address', async (req: Request, res: Response) => {
     const removed = db.removeWallet(req.params.address)
     if (!removed) {
       res.status(404).json({ error: 'Wallet not found' })
       return
     }
+
+    // Sync Helius webhook to remove the address
+    syncWebhook().catch(err => console.error('[Server] Webhook sync error:', err))
+
     res.json({ ok: true })
   })
 
   // ── GET /api/alerts ───────────────────────────────────────────────────────
   app.get('/api/alerts', (_req: Request, res: Response) => {
-    const alerts = db.getRecentAlerts(50)
-    res.json(alerts)
+    res.json(db.getRecentAlerts(50))
   })
 
   // ── GET /api/users ────────────────────────────────────────────────────────
@@ -184,7 +226,12 @@ export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonit
   })
 
   app.listen(config.port, () => {
-    console.log(`[Server] HTTP server listening on port ${config.port}`)
-    console.log(`[Server] Dashboard: http://localhost:${config.port}`)
+    console.log(`[Server] Listening on port ${config.port}`)
+    if (config.appUrl) {
+      console.log(`[Server] Dashboard: ${config.appUrl}`)
+      console.log(`[Server] Webhook:   ${config.appUrl}/api/webhook/helius`)
+    } else {
+      console.log(`[Server] Dashboard: http://localhost:${config.port}`)
+    }
   })
 }

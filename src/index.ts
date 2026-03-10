@@ -19,6 +19,7 @@ import { AlertManager } from './alerts'
 import { WalletPoller } from './walletPoller'
 import { setupBot } from './bot'
 import { startServer } from './server'
+import { syncWebhook } from './heliusWebhook'
 import { MonitorStatus } from './types'
 
 async function main(): Promise<void> {
@@ -81,7 +82,10 @@ async function main(): Promise<void> {
   walletPoller.start()
 
   // Start HTTP server + dashboard
-  startServer(getStatus, monitor)
+  startServer(getStatus, monitor, walletPoller)
+
+  // Register / update Helius webhook (async, non-blocking)
+  syncWebhook().catch(err => console.error('[Init] Webhook sync error:', err))
 
   // Print config summary
   console.log(
