@@ -187,7 +187,14 @@ export function startServer(
         address: w.address,
         label: w.label,
         added_at: w.addedAt,
-        holdings: db.getWalletHoldings(w.address),
+        holdings: db.getWalletHoldings(w.address).map((h: any) => ({
+          mint: h.mint,
+          amount: h.amount,
+          symbol: h.symbol,
+          name: h.name,
+          price_usd: h.priceUsd,
+          market_cap: h.marketCap,
+        })),
       }))
     )
   })

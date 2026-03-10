@@ -79,7 +79,7 @@ export class AlertManager {
         buyCount: buysM5,
         priceChangePct,
         volumeUsd: pair.volume?.m5,
-        marketCapUsd: pair.marketCap ?? pair.fdv,
+        marketCapUsd: pair.fdv ?? pair.marketCap,
         priceUsd: pair.priceUsd,
         source: 'dexscreener',
       })

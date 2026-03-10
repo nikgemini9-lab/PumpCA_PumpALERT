@@ -95,7 +95,7 @@ export class DexScreenerPoller extends EventEmitter {
             name: pair.baseToken.name,
             symbol: pair.baseToken.symbol,
             priceUsd: pair.priceUsd,
-            marketCap: pair.marketCap ?? pair.fdv,
+            marketCap: pair.fdv ?? pair.marketCap,
             ...(twitterHandle ? { twitterHandle } : {}),
           })
 

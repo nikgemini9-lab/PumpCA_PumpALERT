@@ -758,7 +758,8 @@
         </div>
         <div class="token-price">
           <div class="price">${h.price_usd ? '$' + fmtPrice(h.price_usd) : '–'}</div>
-          <div class="mc">${h.market_cap ? 'MC ' + fmtNum(h.market_cap) : '–'}</div>
+          <div class="mc">${h.market_cap ? fmtNum(h.market_cap) : '–'}</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:1px">${fmtAmount(h.amount)} held</div>
         </div>
         <div style="margin-left:4px">
           <button class="btn-remove" onclick="addToWatchlist('${h.mint}')" title="Add to watchlist">+Watch</button>
@@ -941,6 +942,15 @@
     if (n >= 0.01) return n.toFixed(6)
     // Use toPrecision for very tiny values to show 4 significant figures
     return n.toPrecision(4)
+  }
+
+  function fmtAmount(n) {
+    if (!n && n !== 0) return '?'
+    if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + 'B'
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
+    if (n >= 1) return n.toFixed(2)
+    return n.toPrecision(3)
   }
 
   function fmtFollowers(n) {
