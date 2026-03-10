@@ -26,7 +26,7 @@ import { config } from './config'
 import * as db from './database'
 import { MonitorStatus } from './types'
 import { SolanaMonitor } from './monitor'
-import { WalletPoller } from './walletPoller'
+import { WalletPoller, SKIP_MINTS } from './walletPoller'
 import { syncWebhook, parseWebhookTransfers } from './heliusWebhook'
 
 export function startServer(
@@ -66,6 +66,9 @@ export function startServer(
       const events = parseWebhookTransfers(transactions, trackedWallets)
 
       for (const event of events) {
+        // Skip junk tokens (e.g. Wrapped SOL)
+        if (SKIP_MINTS.has(event.mint)) continue
+
         // Update holdings directly from webhook data — zero RPC, zero credits
         db.adjustHolding(event.walletAddress, event.mint, event.delta)
 

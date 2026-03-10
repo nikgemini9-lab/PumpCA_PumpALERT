@@ -241,6 +241,10 @@ export function getWalletHoldings(walletAddress: string): WalletHolding[] {
     FROM wallet_holdings wh
     LEFT JOIN tokens t ON t.mint = wh.mint
     WHERE wh.wallet_address = ?
+      AND (
+        t.price_usd IS NULL
+        OR CAST(t.price_usd AS REAL) * wh.amount >= 5.0
+      )
     ORDER BY wh.updated_at DESC
   `).all(walletAddress) as any[]
   return rows.map(r => ({

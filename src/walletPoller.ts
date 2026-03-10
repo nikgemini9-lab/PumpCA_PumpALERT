@@ -33,6 +33,14 @@ const POLLING_INTERVAL_MS  =  5 * 60_000
 // Max new tokens to add to watchlist per wallet scan (avoids flooding with old dust)
 const MAX_NEW_TOKENS_PER_SCAN = 20
 
+// Minimum USD value for a holding to be tracked / added to watchlist
+const MIN_HOLDING_USD = 5
+
+// Tokens that are always ignored regardless of balance (native wrappers, etc.)
+export const SKIP_MINTS = new Set([
+  'So11111111111111111111111111111111111111112', // Wrapped SOL
+])
+
 export class WalletPoller {
   private connection: Connection
   private monitor: SolanaMonitor
@@ -112,6 +120,7 @@ export class WalletPoller {
       const parsed = acct.account.data.parsed?.info
       if (!parsed) continue
       const mint = parsed.mint as string
+      if (SKIP_MINTS.has(mint)) continue
       const rawAmount = parsed.tokenAmount?.amount as string | undefined
       const uiAmount = parsed.tokenAmount?.uiAmount as number | null
       if (rawAmount && rawAmount !== '0') {
@@ -136,6 +145,18 @@ export class WalletPoller {
         console.log(`[WalletPoller] ${label}: hit new-token cap (${MAX_NEW_TOKENS_PER_SCAN}), skipping rest`)
         break
       }
+
+      // Skip watchlist addition if holding has a known price and value < $5
+      const existingToken = db.getToken(holding.mint)
+      if (existingToken?.priceUsd) {
+        const priceUsd = parseFloat(existingToken.priceUsd)
+        const valueUsd = holding.amount * priceUsd
+        if (valueUsd < MIN_HOLDING_USD) {
+          console.log(`[WalletPoller] Skipping ${holding.mint.slice(0, 8)}... (value $${valueUsd.toFixed(2)} < $${MIN_HOLDING_USD})`)
+          continue
+        }
+      }
+
       const added = db.addToken(holding.mint, 'Unknown', '?', 'wallet', address)
       if (added) {
         newCount++
