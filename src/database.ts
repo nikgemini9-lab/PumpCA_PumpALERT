@@ -33,7 +33,8 @@ export async function initDatabase(): Promise<void> {
       added_at    INTEGER NOT NULL,
       active      INTEGER NOT NULL DEFAULT 1,
       source      TEXT NOT NULL DEFAULT 'manual',
-      wallet_source TEXT
+      wallet_source TEXT,
+      initial_market_cap REAL
     )`,
     `CREATE TABLE IF NOT EXISTS alerts (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +74,7 @@ export async function initDatabase(): Promise<void> {
   await migrateColumn('tokens', 'twitter_handle', 'TEXT')
   await migrateColumn('tokens', 'twitter_followers', 'INTEGER')
   await migrateColumn('tokens', 'twitter_followers_prev', 'INTEGER')
+  await migrateColumn('tokens', 'initial_market_cap', 'REAL')
 }
 
 async function migrateColumn(table: string, column: string, type: string): Promise<void> {
@@ -156,9 +158,16 @@ export async function updateTokenMetadata(
   const marketCap = data.marketCap ?? token.marketCap
   const twitterHandle = data.twitterHandle ?? token.twitterHandle ?? null
 
+  // Set initial_market_cap once — only when it's still null and we have a value
+  const initialMarketCap =
+    token.initialMarketCap == null && data.marketCap != null
+      ? data.marketCap
+      : token.initialMarketCap ?? null
+
   await client.execute({
-    sql: 'UPDATE tokens SET name = ?, symbol = ?, price_usd = ?, market_cap = ?, twitter_handle = ? WHERE mint = ?',
-    args: [name, symbol, priceUsd ?? null, marketCap ?? null, twitterHandle, mint],
+    sql: `UPDATE tokens SET name = ?, symbol = ?, price_usd = ?, market_cap = ?,
+          twitter_handle = ?, initial_market_cap = ? WHERE mint = ?`,
+    args: [name, symbol, priceUsd ?? null, marketCap ?? null, twitterHandle, initialMarketCap, mint],
   })
 }
 
@@ -394,6 +403,7 @@ function rowToToken(row: any): Token {
     symbol: row.symbol as string,
     priceUsd: row.price_usd != null ? String(row.price_usd) : null,
     marketCap: row.market_cap != null ? Number(row.market_cap) : null,
+    initialMarketCap: row.initial_market_cap != null ? Number(row.initial_market_cap) : null,
     addedAt: Number(row.added_at),
     active: Number(row.active) === 1,
     source: row.source === 'wallet' ? 'wallet' : 'manual',

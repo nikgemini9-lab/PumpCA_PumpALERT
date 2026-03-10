@@ -69,6 +69,7 @@ export class AlertManager {
       solAmount,
       priceUsd: token?.priceUsd ?? undefined,
       marketCapUsd: token?.marketCap ?? undefined,
+      initialMarketCapUsd: token?.initialMarketCap ?? undefined,
       source: 'onchain',
     })
   }
@@ -98,6 +99,17 @@ export class AlertManager {
     currentPrice: number | undefined
   ): Promise<void> {
     if (await this.isOnCooldown(mint, currentPrice)) return
+
+    const token = await db.getToken(mint)
+    const currentMC = pair.fdv ?? pair.marketCap
+    const initialMC = token?.initialMarketCap ?? null
+
+    // Skip alert if current MC is below first-seen baseline (token already dumped from when we first saw it)
+    if (initialMC != null && currentMC != null && currentMC < initialMC) {
+      console.log(`[Alert] Skipped ${mint.slice(0, 8)} — MC $${fmtNum(currentMC)} below first-seen $${fmtNum(initialMC)}`)
+      return
+    }
+
     await this.sendAlert({
       mint,
       name: pair.baseToken.name,
@@ -105,8 +117,9 @@ export class AlertManager {
       buyCount: buysM5,
       priceChangePct,
       volumeUsd: pair.volume?.m5,
-      marketCapUsd: pair.fdv ?? pair.marketCap,
+      marketCapUsd: currentMC,
       priceUsd: pair.priceUsd,
+      initialMarketCapUsd: initialMC ?? undefined,
       source: 'dexscreener',
     })
   }
@@ -276,6 +289,12 @@ function formatMessage(
 
   if (data.marketCapUsd) {
     lines.push(`💎 MC     <b>$${fmtNum(data.marketCapUsd)}</b>`)
+  }
+
+  if (data.initialMarketCapUsd && data.marketCapUsd && data.initialMarketCapUsd > 0) {
+    const changePct = ((data.marketCapUsd - data.initialMarketCapUsd) / data.initialMarketCapUsd) * 100
+    const sign = changePct >= 0 ? '+' : ''
+    lines.push(`📍 First seen  <b>$${fmtNum(data.initialMarketCapUsd)}</b> MC  →  <b>${sign}${changePct.toFixed(0)}%</b>`)
   }
 
   if (holderNames.length > 0) {

@@ -4,6 +4,7 @@ export interface Token {
   symbol: string
   priceUsd: string | null
   marketCap: number | null
+  initialMarketCap?: number | null
   addedAt: number
   active: boolean
   source?: 'manual' | 'wallet'
@@ -95,6 +96,7 @@ export interface AlertData {
   solAmount?: number
   volumeUsd?: number
   marketCapUsd?: number
+  initialMarketCapUsd?: number
   priceUsd?: string
   twitterHandle?: string
   followersDelta?: number
