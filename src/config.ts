@@ -30,10 +30,23 @@ function buildWssUrl(): string {
   return http.replace(/^https?:\/\//, 'wss://')
 }
 
+// Multi-user setup: NIK_CHAT_ID and JOSH_CHAT_ID
+// Falls back to legacy TELEGRAM_CHAT_ID for Nik if NIK_CHAT_ID not set
+const nikChatId = optional('NIK_CHAT_ID', optional('TELEGRAM_CHAT_ID', ''))
+const joshChatId = optional('JOSH_CHAT_ID', '')
+
+import { User } from './types'
+
+const users: User[] = []
+if (nikChatId) users.push({ name: 'nik', chatId: nikChatId })
+if (joshChatId) users.push({ name: 'josh', chatId: joshChatId })
+
 export const config = {
   telegram: {
     botToken: required('TELEGRAM_BOT_TOKEN'),
-    chatId: optional('TELEGRAM_CHAT_ID', ''),
+    // Legacy single chatId — kept for backwards compat, points to Nik
+    chatId: nikChatId,
+    users,
   },
   solana: {
     rpcUrl: buildRpcUrl(),
@@ -46,6 +59,9 @@ export const config = {
     buyCountWindowMinutes: optionalNumber('BUY_COUNT_WINDOW_MINUTES', 5),
     cooldownMinutes: optionalNumber('ALERT_COOLDOWN_MINUTES', 10),
     pollIntervalSeconds: optionalNumber('POLL_INTERVAL_SECONDS', 30),
+  },
+  dashboard: {
+    secret: optional('DASHBOARD_SECRET', ''),
   },
   port: optionalNumber('PORT', 3000),
 }

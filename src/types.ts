@@ -6,6 +6,27 @@ export interface Token {
   marketCap: number | null
   addedAt: number
   active: boolean
+  source?: 'manual' | 'wallet'
+  walletSource?: string | null
+}
+
+export interface User {
+  name: string
+  chatId: string
+}
+
+export interface Wallet {
+  address: string
+  label: string
+  ownerChatId: string
+  addedAt: number
+}
+
+export interface WalletHolding {
+  walletAddress: string
+  mint: string
+  amount: number
+  updatedAt: number
 }
 
 export interface BondingCurveState {
@@ -76,4 +97,13 @@ export interface MonitorStatus {
   lastPollAt: number | null
   uptime: number
   startedAt: number
+}
+
+export interface RecentAlert {
+  id: number
+  mint: string
+  symbol: string
+  name: string
+  alertType: string
+  sentAt: number
 }

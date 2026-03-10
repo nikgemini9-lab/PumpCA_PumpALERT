@@ -1,46 +1,190 @@
 /**
  * Express HTTP server
  *
- * Exposes:
- *   GET /health  — health check (used by Fly.io / UptimeRobot to keep the process alive)
- *   GET /         — simple status dashboard (JSON)
+ * Routes:
+ *   GET  /health                  — health check (Fly.io / UptimeRobot)
+ *   GET  /                        — serves the web dashboard (HTML)
+ *
+ * REST API (all require DASHBOARD_SECRET if set):
+ *   GET  /api/status              — uptime, counts
+ *   GET  /api/watchlist           — all active tokens
+ *   POST /api/watchlist           — { mint } add token
+ *   DELETE /api/watchlist/:mint   — remove token
+ *   GET  /api/wallets             — all tracked wallets with holdings
+ *   POST /api/wallets             — { label, address } add wallet
+ *   DELETE /api/wallets/:address  — remove wallet
+ *   GET  /api/alerts              — recent 50 alerts
+ *   GET  /api/users               — configured user names (no chat IDs)
  */
 
-import express, { Request, Response } from 'express'
+import express, { Request, Response, NextFunction } from 'express'
+import path from 'path'
 import { config } from './config'
 import * as db from './database'
 import { MonitorStatus } from './types'
+import { SolanaMonitor } from './monitor'
 
-export function startServer(getStatus: () => MonitorStatus): void {
+export function startServer(getStatus: () => MonitorStatus, monitor: SolanaMonitor): void {
   const app = express()
+  app.use(express.json())
 
+  // ── Static dashboard ──────────────────────────────────────────────────────
+  const publicDir = path.join(__dirname, 'public')
+  app.use(express.static(publicDir))
+
+  // ── Health check (no auth) ────────────────────────────────────────────────
   app.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', ts: new Date().toISOString() })
   })
 
-  app.get('/', (_req: Request, res: Response) => {
-    const status = getStatus()
-    const tokens = db.getActiveTokens()
+  // ── Auth middleware for /api/* ────────────────────────────────────────────
+  app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    const secret = config.dashboard.secret
+    if (!secret) return next() // no auth configured
 
+    const authHeader = req.headers.authorization
+    const queryKey = req.query.key as string | undefined
+
+    const provided = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : queryKey
+
+    if (provided === secret) return next()
+
+    res.status(401).json({ error: 'Unauthorized' })
+  })
+
+  // ── GET /api/status ───────────────────────────────────────────────────────
+  app.get('/api/status', (_req: Request, res: Response) => {
+    const status = getStatus()
+    const wallets = db.getWallets()
     res.json({
-      status: 'online',
+      online: true,
       uptime_ms: status.uptime,
       started_at: new Date(status.startedAt).toISOString(),
-      tracked_tokens: tokens.length,
+      tracked_tokens: status.trackedTokens,
+      tracked_wallets: wallets.length,
       onchain_subscriptions: status.onchainSubscriptions,
       last_poll_at: status.lastPollAt ? new Date(status.lastPollAt).toISOString() : null,
-      tokens: tokens.map(t => ({
-        mint: t.mint,
-        symbol: t.symbol,
-        name: t.name,
-        price_usd: t.priceUsd,
-        market_cap_usd: t.marketCap,
-        alerts_sent: db.getAlertCount(t.mint),
-      })),
+      users: config.telegram.users.map(u => u.name),
     })
+  })
+
+  // ── GET /api/watchlist ────────────────────────────────────────────────────
+  app.get('/api/watchlist', (_req: Request, res: Response) => {
+    const tokens = db.getActiveTokens()
+    res.json(
+      tokens.map(t => ({
+        mint: t.mint,
+        name: t.name,
+        symbol: t.symbol,
+        price_usd: t.priceUsd,
+        market_cap: t.marketCap,
+        added_at: t.addedAt,
+        source: t.source,
+        wallet_source: t.walletSource,
+        alert_count: db.getAlertCount(t.mint),
+      }))
+    )
+  })
+
+  // ── POST /api/watchlist ───────────────────────────────────────────────────
+  app.post('/api/watchlist', async (req: Request, res: Response) => {
+    const { mint } = req.body as { mint?: string }
+    if (!mint || typeof mint !== 'string' || mint.trim().length < 32) {
+      res.status(400).json({ error: 'Invalid mint address' })
+      return
+    }
+
+    const added = db.addToken(mint.trim(), 'Unknown', '?', 'manual', null)
+    if (!added) {
+      res.status(409).json({ error: 'Already tracking this token' })
+      return
+    }
+
+    monitor.subscribeToToken(mint.trim()).catch(err => {
+      console.error(`[Server] subscribe error for ${mint}:`, err)
+    })
+
+    res.status(201).json({ ok: true, mint: mint.trim() })
+  })
+
+  // ── DELETE /api/watchlist/:mint ───────────────────────────────────────────
+  app.delete('/api/watchlist/:mint', async (req: Request, res: Response) => {
+    const { mint } = req.params
+    const removed = db.removeToken(mint)
+    if (!removed) {
+      res.status(404).json({ error: 'Token not found' })
+      return
+    }
+    monitor.unsubscribeFromToken(mint).catch(() => {})
+    res.json({ ok: true })
+  })
+
+  // ── GET /api/wallets ──────────────────────────────────────────────────────
+  app.get('/api/wallets', (_req: Request, res: Response) => {
+    const wallets = db.getWallets()
+    res.json(
+      wallets.map(w => ({
+        address: w.address,
+        label: w.label,
+        added_at: w.addedAt,
+        holdings: db.getWalletHoldings(w.address),
+      }))
+    )
+  })
+
+  // ── POST /api/wallets ─────────────────────────────────────────────────────
+  app.post('/api/wallets', (req: Request, res: Response) => {
+    const { label, address } = req.body as { label?: string; address?: string }
+
+    if (!label || !address) {
+      res.status(400).json({ error: 'label and address are required' })
+      return
+    }
+
+    const ownerName = label.toLowerCase().trim()
+    const owner = config.telegram.users.find(u => u.name.toLowerCase() === ownerName)
+    if (!owner) {
+      const knownNames = config.telegram.users.map(u => u.name).join(', ') || 'none'
+      res.status(400).json({
+        error: `Unknown owner "${label}". Configured users: ${knownNames}`,
+      })
+      return
+    }
+
+    const added = db.addWallet(address.trim(), ownerName, owner.chatId)
+    if (!added) {
+      res.status(409).json({ error: 'Wallet already tracked' })
+      return
+    }
+
+    res.status(201).json({ ok: true, address: address.trim(), label: ownerName })
+  })
+
+  // ── DELETE /api/wallets/:address ──────────────────────────────────────────
+  app.delete('/api/wallets/:address', (req: Request, res: Response) => {
+    const removed = db.removeWallet(req.params.address)
+    if (!removed) {
+      res.status(404).json({ error: 'Wallet not found' })
+      return
+    }
+    res.json({ ok: true })
+  })
+
+  // ── GET /api/alerts ───────────────────────────────────────────────────────
+  app.get('/api/alerts', (_req: Request, res: Response) => {
+    const alerts = db.getRecentAlerts(50)
+    res.json(alerts)
+  })
+
+  // ── GET /api/users ────────────────────────────────────────────────────────
+  app.get('/api/users', (_req: Request, res: Response) => {
+    res.json(config.telegram.users.map(u => u.name))
   })
 
   app.listen(config.port, () => {
     console.log(`[Server] HTTP server listening on port ${config.port}`)
+    console.log(`[Server] Dashboard: http://localhost:${config.port}`)
   })
 }

@@ -2,14 +2,17 @@
  * Telegram bot
  *
  * Commands:
- *   /start           — Welcome + show chat ID
- *   /add <CA>        — Add a token CA to track
- *   /remove <CA>     — Stop tracking a token
- *   /list            — Show all tracked tokens
- *   /status          — Show monitor health
- *   /thresholds      — Show alert thresholds
- *   /set <key> <val> — Change a threshold at runtime
- *   /help            — Command reference
+ *   /start              — Welcome + show chat ID
+ *   /add <CA>           — Add a token CA to the shared watchlist
+ *   /remove <CA>        — Stop tracking a token
+ *   /list               — Show all tracked tokens
+ *   /wallets            — List tracked wallets
+ *   /addwallet <owner> <address>   — Add a wallet (owner = nik or josh)
+ *   /removewallet <address>        — Remove a wallet
+ *   /status             — Show monitor health
+ *   /thresholds         — Show alert thresholds
+ *   /set <key> <val>    — Change a threshold at runtime
+ *   /help               — Command reference
  */
 
 import TelegramBot from 'node-telegram-bot-api'
@@ -24,11 +27,11 @@ export function setupBot(
   monitor: SolanaMonitor,
   getStatus: () => MonitorStatus
 ): void {
-  const allowedChatId = config.telegram.chatId
 
+  /** Any configured user (Nik or Josh) is authorized */
   function isAuthorized(chatId: string | number): boolean {
-    if (!allowedChatId) return true // no restriction set
-    return String(chatId) === String(allowedChatId)
+    if (config.telegram.users.length === 0) return true // no restriction set
+    return config.telegram.users.some(u => String(u.chatId) === String(chatId))
   }
 
   async function reply(msg: TelegramBot.Message, text: string): Promise<void> {
@@ -48,12 +51,14 @@ export function setupBot(
       ``,
       isAuthorized(chatId)
         ? `✅ You are authorized.`
-        : `⚠️ Set <code>TELEGRAM_CHAT_ID=${chatId}</code> in your environment to enable alerts.`,
+        : `⚠️ Your chat ID is not in the authorized list. Ask Nik to add it.`,
       ``,
       `<b>Commands:</b>`,
       `/add &lt;CA&gt; — Track a token`,
       `/remove &lt;CA&gt; — Stop tracking`,
       `/list — Show tracked tokens`,
+      `/wallets — List tracked wallets`,
+      `/addwallet &lt;nik|josh&gt; &lt;address&gt; — Add wallet`,
       `/status — Monitor health`,
       `/thresholds — Alert settings`,
       `/help — Full command list`,
@@ -70,13 +75,22 @@ export function setupBot(
         `<b>PumpAlert Commands</b>`,
         ``,
         `<code>/add &lt;CA&gt;</code>`,
-        `  Add a pump.fun token CA to your watchlist`,
+        `  Add a token to the shared watchlist`,
         ``,
         `<code>/remove &lt;CA&gt;</code>`,
-        `  Remove a token from your watchlist`,
+        `  Remove a token from the watchlist`,
         ``,
         `<code>/list</code>`,
         `  Show all tracked tokens with stats`,
+        ``,
+        `<code>/wallets</code>`,
+        `  List all tracked wallets`,
+        ``,
+        `<code>/addwallet &lt;nik|josh&gt; &lt;address&gt;</code>`,
+        `  Track a Solana wallet and auto-watch its holdings`,
+        ``,
+        `<code>/removewallet &lt;address&gt;</code>`,
+        `  Stop tracking a wallet`,
         ``,
         `<code>/status</code>`,
         `  WebSocket subs, uptime, last poll`,
@@ -85,10 +99,10 @@ export function setupBot(
         `  Show current alert thresholds`,
         ``,
         `<code>/set pricechange &lt;%&gt;</code>`,
-        `  Set price-change alert threshold (e.g. /set pricechange 20)`,
+        `  Set price-change alert threshold`,
         ``,
         `<code>/set buycount &lt;n&gt;</code>`,
-        `  Set buy-count alert threshold (e.g. /set buycount 8)`,
+        `  Set buy-count alert threshold`,
         ``,
         `<code>/set cooldown &lt;min&gt;</code>`,
         `  Set cooldown between alerts per token`,
@@ -174,8 +188,9 @@ export function setupBot(
       const price = t.priceUsd ? `$${t.priceUsd}` : 'no price yet'
       const mc = t.marketCap ? `MC $${fmtNum(t.marketCap)}` : ''
       const alertCount = db.getAlertCount(t.mint)
+      const srcTag = t.source === 'wallet' ? ` 💼` : ''
       lines.push(
-        `🟢 <b>${escHtml(t.symbol)}</b> — ${escHtml(t.name)}`,
+        `🟢 <b>${escHtml(t.symbol)}</b> — ${escHtml(t.name)}${srcTag}`,
         `   <code>${t.mint}</code>`,
         `   ${price}  ${mc}  🔔 ${alertCount} alerts`,
         ``
@@ -192,6 +207,96 @@ export function setupBot(
     await reply(msg, lines.join('\n'))
   })
 
+  // ── /wallets ──────────────────────────────────────────────────────────────
+  bot.onText(/\/wallets$/, async msg => {
+    if (!isAuthorized(msg.chat.id)) return
+
+    const wallets = db.getWallets()
+    if (wallets.length === 0) {
+      await reply(
+        msg,
+        `📭 No wallets tracked yet.\nUse <code>/addwallet nik|josh &lt;address&gt;</code> to add one.`
+      )
+      return
+    }
+
+    const lines: string[] = [`<b>Tracked Wallets (${wallets.length})</b>`, ``]
+    for (const w of wallets) {
+      const holdings = db.getWalletHoldings(w.address)
+      lines.push(
+        `👤 <b>${escHtml(w.label)}</b>  (${holdings.length} holdings)`,
+        `   <code>${w.address}</code>`,
+        ``
+      )
+    }
+
+    await reply(msg, lines.join('\n'))
+  })
+
+  // ── /addwallet <owner> <address> ──────────────────────────────────────────
+  bot.onText(/\/addwallet (\S+) (\S+)/, async (msg, match) => {
+    if (!isAuthorized(msg.chat.id)) return
+
+    const ownerLabel = match?.[1]?.toLowerCase().trim()
+    const address = match?.[2]?.trim()
+
+    if (!ownerLabel || !address) {
+      await reply(msg, `❌ Usage: <code>/addwallet &lt;nik|josh&gt; &lt;wallet_address&gt;</code>`)
+      return
+    }
+
+    if (!isValidSolanaAddress(address)) {
+      await reply(msg, `❌ Invalid Solana wallet address.`)
+      return
+    }
+
+    // Look up the owner's chat ID from config
+    const owner = config.telegram.users.find(u => u.name.toLowerCase() === ownerLabel)
+    if (!owner) {
+      const knownNames = config.telegram.users.map(u => u.name).join(', ') || 'none configured'
+      await reply(
+        msg,
+        `❌ Unknown owner <b>${escHtml(ownerLabel)}</b>.\nKnown users: ${knownNames}\n\nMake sure NIK_CHAT_ID / JOSH_CHAT_ID are set on Render.`
+      )
+      return
+    }
+
+    const added = db.addWallet(address, ownerLabel, owner.chatId)
+    if (!added) {
+      await reply(msg, `ℹ️ Wallet already tracked: <code>${address}</code>`)
+      return
+    }
+
+    await reply(
+      msg,
+      [
+        `✅ <b>Wallet added for ${escHtml(ownerLabel)}:</b>`,
+        `<code>${address}</code>`,
+        ``,
+        `Holdings will be scanned every 60s and pump alerts sent automatically.`,
+      ].join('\n')
+    )
+  })
+
+  // ── /removewallet <address> ───────────────────────────────────────────────
+  bot.onText(/\/removewallet (\S+)/, async (msg, match) => {
+    if (!isAuthorized(msg.chat.id)) return
+
+    const address = match?.[1]?.trim()
+    if (!address) {
+      await reply(msg, `❌ Usage: <code>/removewallet &lt;wallet_address&gt;</code>`)
+      return
+    }
+
+    const removed = db.removeWallet(address)
+    if (!removed) {
+      await reply(msg, `ℹ️ Wallet not found: <code>${address}</code>`)
+      return
+    }
+
+    await reply(msg, `🗑 Stopped tracking wallet <code>${address}</code>`)
+  })
+
   // ── /status ───────────────────────────────────────────────────────────────
   bot.onText(/\/status/, async msg => {
     if (!isAuthorized(msg.chat.id)) return
@@ -202,6 +307,8 @@ export function setupBot(
       ? `${Math.round((Date.now() - s.lastPollAt) / 1000)}s ago`
       : 'never'
 
+    const walletCount = db.getWallets().length
+
     await reply(
       msg,
       [
@@ -211,6 +318,7 @@ export function setupBot(
         `👁 On-chain subs: <b>${s.onchainSubscriptions}</b>`,
         `📡 Last DexScr poll: <b>${lastPoll}</b>`,
         `🪙 Tracked tokens: <b>${s.trackedTokens}</b>`,
+        `👛 Tracked wallets: <b>${walletCount}</b>`,
         ``,
         `RPC: <code>${config.solana.rpcUrl.slice(0, 40)}...</code>`,
       ].join('\n')

@@ -5,8 +5,10 @@
  *   1. SolanaMonitor  — on-chain bonding curve changes (real-time, pre-graduation)
  *   2. DexScreenerPoller — market data (post-graduation + richer data)
  *
- * Applies cooldown logic so you don't get spammed.
- * Formats and sends Telegram messages.
+ * Alert routing:
+ *   - Tokens added manually (source='manual') → alert ALL configured users
+ *   - Tokens auto-added from a wallet scan (source='wallet') → alert only that wallet's owner
+ *     PLUS a note is added for all users if someone they know holds it
  */
 
 import TelegramBot from 'node-telegram-bot-api'
@@ -82,26 +84,54 @@ export class AlertManager {
   // ── Core send ─────────────────────────────────────────────────────────────
 
   private sendAlert(data: AlertData): void {
-    if (!config.telegram.chatId) {
-      console.warn('[Alert] TELEGRAM_CHAT_ID not set, skipping alert.')
+    const targets = this.resolveTargets(data.mint)
+
+    if (targets.length === 0) {
+      console.warn('[Alert] No chat IDs configured, skipping alert.')
       return
     }
 
     db.recordAlert(data.mint, 'pump')
 
-    const message = formatMessage(data, config.alerts)
+    // Find wallets holding this token for the "held by" annotation
+    const holders = db.getWalletsHoldingToken(data.mint)
+    const holderNames = holders.map(w => w.label)
 
-    this.bot
-      .sendMessage(config.telegram.chatId, message, {
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-      })
-      .then(() => {
-        console.log(`[Alert] Sent pump alert for ${data.symbol} (${data.mint.slice(0, 8)}...)`)
-      })
-      .catch(err => {
-        console.error('[Alert] Failed to send Telegram message:', err?.message)
-      })
+    const message = formatMessage(data, config.alerts, holderNames)
+
+    for (const chatId of targets) {
+      this.bot
+        .sendMessage(chatId, message, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        })
+        .then(() => {
+          console.log(`[Alert] Sent pump alert for ${data.symbol} (${data.mint.slice(0, 8)}...) → chat ${chatId}`)
+        })
+        .catch(err => {
+          console.error('[Alert] Failed to send Telegram message:', err?.message)
+        })
+    }
+  }
+
+  /**
+   * Determine which chat IDs should receive this alert.
+   *
+   * Rules:
+   *   - If the token was auto-added from a wallet scan: alert only the wallet owner
+   *   - If added manually (or unknown source): alert all configured users
+   */
+  private resolveTargets(mint: string): string[] {
+    const token = db.getToken(mint)
+
+    if (token?.source === 'wallet' && token.walletSource) {
+      const wallet = db.getWallet(token.walletSource)
+      if (wallet?.ownerChatId) return [wallet.ownerChatId]
+    }
+
+    // Manual / unknown source → all users
+    const allChatIds = config.telegram.users.map(u => u.chatId).filter(Boolean)
+    return allChatIds
   }
 
   private isOnCooldown(mint: string): boolean {
@@ -121,7 +151,8 @@ export class AlertManager {
 
 function formatMessage(
   data: AlertData,
-  alertConfig: typeof config.alerts
+  alertConfig: typeof config.alerts,
+  holderNames: string[]
 ): string {
   const lines: string[] = [
     `🚀 <b>PUMP ALERT!</b>`,
@@ -155,6 +186,10 @@ function formatMessage(
 
   if (data.marketCapUsd) {
     lines.push(`💎 MC     <b>$${fmtNum(data.marketCapUsd)}</b>`)
+  }
+
+  if (holderNames.length > 0) {
+    lines.push(`💼 Held by  <b>${holderNames.join(', ')}</b>`)
   }
 
   const src = data.source === 'onchain' ? '⛓ on-chain' : '📡 DexScreener'
