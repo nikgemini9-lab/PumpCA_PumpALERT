@@ -364,8 +364,8 @@
     .token-mint.copied { color: var(--green); }
 
     .social-row {
-      margin-top: 4px;
-      font-size: 11px;
+      margin-top: 5px;
+      font-size: 12px;
       display: flex;
       align-items: center;
       gap: 4px;
@@ -379,14 +379,15 @@
     }
     .social-link:hover { color: var(--green); }
     .social-set {
-      color: var(--text-muted);
+      color: var(--text-dim);
       cursor: pointer;
-      border: none;
+      border: 1px dashed var(--border);
       background: none;
       font-size: 11px;
-      padding: 0;
+      padding: 1px 6px;
+      border-radius: 4px;
     }
-    .social-set:hover { color: var(--text-dim); }
+    .social-set:hover { color: var(--green); border-color: var(--green); }
 
     .token-price {
       text-align: right;
