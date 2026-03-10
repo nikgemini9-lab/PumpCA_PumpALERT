@@ -27,7 +27,7 @@ import * as db from './database'
 import { MonitorStatus } from './types'
 import { SolanaMonitor } from './monitor'
 import { WalletPoller } from './walletPoller'
-import { syncWebhook, getAffectedWallets } from './heliusWebhook'
+import { syncWebhook, parseWebhookTransfers } from './heliusWebhook'
 
 export function startServer(
   getStatus: () => MonitorStatus,
@@ -62,13 +62,27 @@ export function startServer(
 
     try {
       const transactions = Array.isArray(req.body) ? req.body : [req.body]
-      const affected = getAffectedWallets(transactions)
+      const trackedWallets = new Set(db.getWallets().map(w => w.address))
+      const events = parseWebhookTransfers(transactions, trackedWallets)
 
-      for (const walletAddr of affected) {
-        console.log(`[Webhook] Activity on wallet ${walletAddr.slice(0, 8)}... — refreshing holdings`)
-        walletPoller.refreshWallet(walletAddr).catch(err => {
-          console.error('[Webhook] Holdings refresh error:', err?.message)
-        })
+      for (const event of events) {
+        // Update holdings directly from webhook data — zero RPC, zero credits
+        db.adjustHolding(event.walletAddress, event.mint, event.delta)
+
+        // If this is a new token received, add it to the watchlist
+        if (event.delta > 0) {
+          const added = db.addToken(event.mint, 'Unknown', '?', 'wallet', event.walletAddress)
+          if (added) {
+            console.log(`[Webhook] New token for ${event.walletAddress.slice(0, 8)}...: ${event.mint.slice(0, 8)}... — added to watchlist`)
+            monitor.subscribeToToken(event.mint).catch(err => {
+              console.error('[Webhook] Subscribe error:', err?.message)
+            })
+          }
+        }
+      }
+
+      if (events.length > 0) {
+        console.log(`[Webhook] Processed ${events.length} transfer event(s)`)
       }
     } catch (err) {
       console.error('[Webhook] Parse error:', err)

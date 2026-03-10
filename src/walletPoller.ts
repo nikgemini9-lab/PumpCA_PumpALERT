@@ -34,9 +34,13 @@ export class WalletPoller {
 
   constructor(monitor: SolanaMonitor) {
     this.monitor = monitor
-    // Use the configured RPC (Helius if key is set) — the public mainnet RPC
-    // is too aggressively rate-limited from server IPs like Render.
-    this.connection = new Connection(config.solana.rpcUrl, { commitment: 'confirmed' })
+    // Use Ankr's free public Solana RPC for holdings scans — no key, no credits.
+    // Helius RPC is reserved for WebSocket price monitoring only.
+    // Ankr is more reliable than mainnet-beta.solana.com from server IPs.
+    const holdingsRpc = config.solana.heliusApiKey
+      ? 'https://rpc.ankr.com/solana'
+      : config.solana.rpcUrl
+    this.connection = new Connection(holdingsRpc, { commitment: 'confirmed' })
   }
 
   start(): void {
@@ -60,13 +64,6 @@ export class WalletPoller {
       clearInterval(this.timer)
       this.timer = null
     }
-  }
-
-  /** Called by the Helius webhook handler for immediate single-wallet refresh. */
-  async refreshWallet(address: string): Promise<void> {
-    const wallet = db.getWallet(address)
-    if (!wallet) return
-    await this.pollWallet(wallet.address, wallet.label)
   }
 
   private async pollAll(): Promise<void> {

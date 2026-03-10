@@ -255,6 +255,29 @@ export function getWalletHoldings(walletAddress: string): WalletHolding[] {
   }))
 }
 
+/**
+ * Incrementally adjust a holding by a delta (positive = received, negative = sent).
+ * Used by the webhook handler to update holdings without any RPC call.
+ * If the resulting amount drops to 0 or below, the holding is removed.
+ */
+export function adjustHolding(walletAddress: string, mint: string, delta: number): void {
+  const existing = db.prepare(
+    'SELECT amount FROM wallet_holdings WHERE wallet_address = ? AND mint = ?'
+  ).get(walletAddress, mint) as { amount: number } | undefined
+
+  const newAmount = (existing?.amount ?? 0) + delta
+
+  if (newAmount <= 0) {
+    db.prepare('DELETE FROM wallet_holdings WHERE wallet_address = ? AND mint = ?').run(walletAddress, mint)
+  } else {
+    db.prepare(`
+      INSERT INTO wallet_holdings (wallet_address, mint, amount, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(wallet_address, mint) DO UPDATE SET amount = excluded.amount, updated_at = excluded.updated_at
+    `).run(walletAddress, mint, newAmount, Date.now())
+  }
+}
+
 /** Find all wallets that hold a given mint — used for personalized alerts */
 export function getWalletsHoldingToken(mint: string): Wallet[] {
   const rows = db.prepare(`

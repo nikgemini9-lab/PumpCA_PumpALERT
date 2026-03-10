@@ -112,26 +112,39 @@ async function updateWebhook(
   await axios.put(`${HELIUS_API}/webhooks/${id}?api-key=${apiKey}`, body)
 }
 
+export interface TokenTransferEvent {
+  walletAddress: string
+  mint: string
+  /** Positive = received (buy), negative = sent (sell) */
+  delta: number
+}
+
 /**
- * Parse an array of Helius enhanced transactions.
- * Returns the set of tracked wallet addresses that were involved in any
- * token transfer — these wallets need a holdings refresh.
+ * Parse an array of Helius enhanced transactions and return structured
+ * token transfer events for tracked wallets.
+ *
+ * This lets us update holdings directly from webhook data — zero extra
+ * RPC calls and zero Helius credits burned.
  */
-export function getAffectedWallets(transactions: unknown[]): Set<string> {
-  const trackedWallets = new Set(db.getWallets().map(w => w.address))
-  const affected = new Set<string>()
+export function parseWebhookTransfers(
+  transactions: unknown[],
+  trackedWallets: Set<string>
+): TokenTransferEvent[] {
+  const events: TokenTransferEvent[] = []
 
   for (const tx of transactions as any[]) {
     for (const transfer of (tx.tokenTransfers ?? []) as any[]) {
-      if (trackedWallets.has(transfer.toUserAccount)) affected.add(transfer.toUserAccount)
-      if (trackedWallets.has(transfer.fromUserAccount)) affected.add(transfer.fromUserAccount)
-    }
-    // Also check nativeTransfers (SOL moves can mean a swap happened)
-    for (const transfer of (tx.nativeTransfers ?? []) as any[]) {
-      if (trackedWallets.has(transfer.toUserAccount)) affected.add(transfer.toUserAccount)
-      if (trackedWallets.has(transfer.fromUserAccount)) affected.add(transfer.fromUserAccount)
+      const amount: number = transfer.tokenAmount ?? 0
+      if (amount <= 0) continue
+
+      if (trackedWallets.has(transfer.toUserAccount)) {
+        events.push({ walletAddress: transfer.toUserAccount, mint: transfer.mint, delta: amount })
+      }
+      if (trackedWallets.has(transfer.fromUserAccount)) {
+        events.push({ walletAddress: transfer.fromUserAccount, mint: transfer.mint, delta: -amount })
+      }
     }
   }
 
-  return affected
+  return events
 }
