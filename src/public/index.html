@@ -363,6 +363,31 @@
     .token-mint:hover { color: var(--green); }
     .token-mint.copied { color: var(--green); }
 
+    .social-row {
+      margin-top: 4px;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .social-link {
+      color: var(--blue);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .social-link:hover { color: var(--green); }
+    .social-set {
+      color: var(--text-muted);
+      cursor: pointer;
+      border: none;
+      background: none;
+      font-size: 11px;
+      padding: 0;
+    }
+    .social-set:hover { color: var(--text-dim); }
+
     .token-price {
       text-align: right;
       flex-shrink: 0;
@@ -749,7 +774,9 @@
       el.innerHTML = '<div class="empty">No token holdings found yet<br><small style="color:var(--text-muted)">Holdings refresh every 60s</small></div>'
       return
     }
-    el.innerHTML = holdings.map(h => `
+    el.innerHTML = holdings.map(h => {
+      const valueUsd = (h.price_usd && h.amount) ? h.amount * parseFloat(h.price_usd) : null
+      return `
       <div class="token-row">
         <div class="token-icon">${esc((h.symbol || '?').slice(0,3))}</div>
         <div class="token-info">
@@ -757,15 +784,16 @@
           <div class="token-mint" onclick="copyMint(this,'${h.mint}')" title="Click to copy">${h.mint}</div>
         </div>
         <div class="token-price">
-          <div class="price">${h.price_usd ? '$' + fmtPrice(h.price_usd) : '–'}</div>
+          <div class="price">${h.price_usd ? '$' + fmtPrice(h.price_usd) : '<span style="color:var(--text-muted);font-size:10px">No pair</span>'}</div>
           <div class="mc">${h.market_cap ? fmtNum(h.market_cap) : '–'}</div>
-          <div style="font-size:10px;color:var(--text-dim);margin-top:1px">${fmtAmount(h.amount)} held</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:2px">${fmtAmount(h.amount)} tokens</div>
+          ${valueUsd ? `<div style="font-size:11px;color:var(--green);font-weight:600">≈$${fmtPrice(String(valueUsd))}</div>` : ''}
         </div>
         <div style="margin-left:4px">
           <button class="btn-remove" onclick="addToWatchlist('${h.mint}')" title="Add to watchlist">+Watch</button>
         </div>
-      </div>
-    `).join('')
+      </div>`
+    }).join('')
   }
 
   async function addWallet() {
@@ -822,29 +850,32 @@
     el.innerHTML = watchlist.map(t => {
       const delta = (t.twitter_followers && t.twitter_followers_prev)
         ? t.twitter_followers - t.twitter_followers_prev : 0
-      const followerStr = t.twitter_followers
-        ? fmtFollowers(t.twitter_followers) + (delta > 0 ? ` <span style="color:var(--green)">+${fmtFollowers(delta)}</span>` : '')
-        : ''
-      const twitterBadge = t.twitter_handle
-        ? `<a href="https://x.com/${esc(t.twitter_handle)}" target="_blank"
-             style="color:var(--text-dim);font-size:10px;text-decoration:none;margin-left:4px"
-             title="@${esc(t.twitter_handle)} on X" onclick="event.stopPropagation()">🐦${followerStr ? ' ' + followerStr : ''}</a>`
-        : ''
+      const socialRow = t.twitter_handle
+        ? `<div class="social-row">
+             <a href="https://x.com/${esc(t.twitter_handle)}" target="_blank" class="social-link" onclick="event.stopPropagation()">
+               🐦 @${esc(t.twitter_handle)}
+               ${t.twitter_followers ? `<span style="color:var(--text-dim)">· ${fmtFollowers(t.twitter_followers)}${delta > 0 ? ` <span style="color:var(--green)">+${fmtFollowers(delta)}</span>` : ''}</span>` : ''}
+             </a>
+           </div>`
+        : `<div class="social-row">
+             <button class="social-set" onclick="event.stopPropagation();setTwitterHandle('${t.mint}')">🐦 Add X community</button>
+           </div>`
       return `
-      <div class="token-row">
-        <div class="token-icon">${esc((t.symbol || '?').slice(0,3))}</div>
+      <div class="token-row" style="align-items:flex-start">
+        <div class="token-icon" style="margin-top:2px">${esc((t.symbol || '?').slice(0,3))}</div>
         <div class="token-info">
           <div class="token-name">
             ${esc(t.name)}
-            <span class="tag ${t.source === 'wallet' ? 'tag-wallet' : 'tag-manual'}">${t.source === 'wallet' ? '💼' : '✋'}</span>${twitterBadge}
+            <span class="tag ${t.source === 'wallet' ? 'tag-wallet' : 'tag-manual'}">${t.source === 'wallet' ? '💼' : '✋'}</span>
           </div>
           <div class="token-mint" onclick="copyMint(this,'${t.mint}')" title="Click to copy">${t.mint}</div>
+          ${socialRow}
         </div>
-        <div class="token-price">
-          <div class="price">${t.price_usd ? '$' + fmtPrice(t.price_usd) : '–'}</div>
-          <div class="mc">${t.market_cap ? 'MC ' + fmtNum(t.market_cap) : '–'}</div>
+        <div class="token-price" style="margin-top:2px">
+          <div class="price">${t.price_usd ? '$' + fmtPrice(t.price_usd) : '<span style="color:var(--text-muted);font-size:10px">No pair</span>'}</div>
+          <div class="mc">${t.market_cap ? fmtNum(t.market_cap) : '–'}</div>
         </div>
-        <button class="btn-remove" onclick="removeToken('${t.mint}')">✕</button>
+        <button class="btn-remove" style="margin-top:2px" onclick="removeToken('${t.mint}')">✕</button>
       </div>`
     }).join('')
   }
@@ -942,6 +973,20 @@
     if (n >= 0.01) return n.toFixed(6)
     // Use toPrecision for very tiny values to show 4 significant figures
     return n.toPrecision(4)
+  }
+
+  async function setTwitterHandle(mint) {
+    const raw = prompt('Enter the X / Twitter handle for this token (without @):')
+    if (!raw) return
+    const handle = raw.replace(/^@/, '').trim()
+    if (!handle) return
+    try {
+      await apiPost(`/api/watchlist/${mint}/twitter`, { handle })
+      toast(`X handle @${handle} saved — follower tracking starts in ~30s`)
+      refresh()
+    } catch (err) {
+      toast(String(err), true)
+    }
   }
 
   function fmtAmount(n) {

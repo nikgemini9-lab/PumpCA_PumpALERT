@@ -167,6 +167,20 @@ export function startServer(
     res.status(201).json({ ok: true, mint: mint.trim() })
   })
 
+  // ── POST /api/watchlist/:mint/twitter — manually set Twitter handle ────────
+  app.post('/api/watchlist/:mint/twitter', (req: Request, res: Response) => {
+    const { mint } = req.params
+    const { handle } = req.body as { handle?: string }
+    if (!handle || typeof handle !== 'string') {
+      res.status(400).json({ error: 'handle required' })
+      return
+    }
+    const clean = handle.replace(/^@/, '').trim().toLowerCase()
+    if (!clean) { res.status(400).json({ error: 'Invalid handle' }); return }
+    db.updateTokenMetadata(mint, { twitterHandle: clean })
+    res.json({ ok: true, handle: clean })
+  })
+
   // ── DELETE /api/watchlist/:mint ───────────────────────────────────────────
   app.delete('/api/watchlist/:mint', async (req: Request, res: Response) => {
     const { mint } = req.params

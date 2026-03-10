@@ -18,7 +18,8 @@ import { config } from './config'
 import * as db from './database'
 
 const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/tokens'
-const JUPITER_PRICE_API = 'https://api.jup.ag/price/v2'
+// Jupiter v6 price API — free, no key, covers all Solana tokens with any liquidity
+const JUPITER_PRICE_API = 'https://price.jup.ag/v6/price'
 // Twitter widget endpoint — returns follower counts for public handles, no API key needed
 const TWITTER_WIDGET_API = 'https://cdn.syndication.twimg.com/widgets/followbutton/info.json'
 const BATCH_SIZE = 30
@@ -169,19 +170,23 @@ export class DexScreenerPoller extends EventEmitter {
    * newly launched, low-liquidity). Free, no API key needed.
    */
   private async fetchJupiterPrices(mints: string[]): Promise<void> {
-    const batches = chunk(mints, 100) // Jupiter supports large batches
+    // Jupiter v6 accepts up to 100 ids per request
+    const batches = chunk(mints, 100)
     for (const batch of batches) {
       try {
-        const res = await axios.get<{ data: Record<string, { id: string; price: string }> }>(
+        // v6 response: { data: { MINT: { id, mintSymbol, vsToken, vsTokenSymbol, price } } }
+        const res = await axios.get<{ data: Record<string, { id: string; price: number }> }>(
           `${JUPITER_PRICE_API}?ids=${batch.join(',')}`,
           { timeout: 8_000, headers: { 'User-Agent': 'PumpAlert/1.0' } }
         )
         const data = res.data?.data ?? {}
+        let updated = 0
         for (const [mint, info] of Object.entries(data)) {
-          if (!info?.price) continue
-          db.updateTokenMetadata(mint, { priceUsd: info.price })
-          console.log(`[Poller] Jupiter price for ${mint.slice(0, 8)}...: $${info.price}`)
+          if (!info?.price || info.price === 0) continue
+          db.updateTokenMetadata(mint, { priceUsd: String(info.price) })
+          updated++
         }
+        if (updated > 0) console.log(`[Poller] Jupiter: prices updated for ${updated} tokens`)
         this.lastPollAt = Date.now()
       } catch (err: any) {
         console.warn(`[Poller] Jupiter price fallback error: ${err?.message ?? err}`)
