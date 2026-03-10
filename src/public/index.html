@@ -708,6 +708,7 @@
         <div class="wallet-addr">${esc(w.address)}</div>
         <div class="wallet-meta">
           <span class="wallet-count">${w.holdings.length} holdings</span>
+          <button class="btn-remove" onclick="event.stopPropagation(); rescanWallet('${w.address}')">Rescan</button>
           <button class="btn-remove" onclick="event.stopPropagation(); removeWallet('${w.address}')">Remove</button>
         </div>
       </div>
@@ -774,6 +775,16 @@
       addrEl.value = ''
       toast(`Wallet added for ${label}`)
       refresh()
+    } catch (err) {
+      toast(String(err), true)
+    }
+  }
+
+  async function rescanWallet(address) {
+    try {
+      await apiPost(`/api/wallets/${address}/refresh`, {})
+      toast('Rescan started — holdings will update shortly')
+      setTimeout(refresh, 4000)
     } catch (err) {
       toast(String(err), true)
     }

@@ -5,7 +5,8 @@
  *   - Helius webhooks handle real-time updates (zero polling credits).
  *   - This poller only runs once on startup (to seed initial holdings)
  *     and every 60 minutes as a safety net (in case a webhook was missed).
- *   - Holdings reads use the FREE public RPC, NOT Helius — zero credits burned.
+ *   - Uses Helius RPC — public endpoints silently fail from server IPs.
+ *     Cost: 1 credit per call = ~1,440 credits/month at 60-min intervals (negligible).
  *
  * Fallback mode (no HELIUS_API_KEY):
  *   - Polls the public Solana RPC every 5 minutes.
@@ -27,10 +28,6 @@ const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ
 const FALLBACK_INTERVAL_MS = 60 * 60_000
 const POLLING_INTERVAL_MS  =  5 * 60_000
 
-// Use public RPC for token account reads — free, no Helius credits burned.
-// We try the public endpoint first; if it silently returns 0 accounts we skip.
-const PUBLIC_RPC_URL = 'https://api.mainnet-beta.solana.com'
-
 // Max new tokens to add to watchlist per wallet scan (avoids flooding with old dust)
 const MAX_NEW_TOKENS_PER_SCAN = 20
 
@@ -41,8 +38,11 @@ export class WalletPoller {
 
   constructor(monitor: SolanaMonitor) {
     this.monitor = monitor
-    // Use public RPC for getParsedTokenAccountsByOwner — free, no Helius credits consumed.
-    this.connection = new Connection(PUBLIC_RPC_URL, { commitment: 'confirmed' })
+    // Must use Helius RPC here — public endpoints (mainnet-beta, Ankr) silently
+    // return partial/empty results for getParsedTokenAccountsByOwner from server
+    // IPs (Render, Fly, etc). Credit cost is 1 credit per call regardless of
+    // account count — negligible at 60-min intervals.
+    this.connection = new Connection(config.solana.rpcUrl, { commitment: 'confirmed' })
   }
 
   start(): void {
@@ -101,9 +101,12 @@ export class WalletPoller {
       const parsed = acct.account.data.parsed?.info
       if (!parsed) continue
       const mint = parsed.mint as string
-      const amount = parsed.tokenAmount?.uiAmount as number | null
-      if (amount && amount > 0) {
-        holdings.push({ mint, amount })
+      // Use raw amount string — uiAmount can be null for some token decimal configs
+      // even when the user genuinely holds the token
+      const rawAmount = parsed.tokenAmount?.amount as string | undefined
+      const uiAmount = parsed.tokenAmount?.uiAmount as number | null
+      if (rawAmount && rawAmount !== '0') {
+        holdings.push({ mint, amount: uiAmount ?? 1 })
       }
     }
 

@@ -220,6 +220,19 @@ export function startServer(
     res.status(201).json({ ok: true, address: address.trim(), label: ownerName })
   })
 
+  // ── POST /api/wallets/:address/refresh ───────────────────────────────────
+  app.post('/api/wallets/:address/refresh', async (req: Request, res: Response) => {
+    const wallet = db.getWallet(req.params.address)
+    if (!wallet) {
+      res.status(404).json({ error: 'Wallet not found' })
+      return
+    }
+    res.json({ ok: true, message: 'Rescan started' })
+    walletPoller.refreshWallet(wallet.address, wallet.label).catch(err =>
+      console.error('[Server] Wallet rescan error:', err)
+    )
+  })
+
   // ── DELETE /api/wallets/:address ──────────────────────────────────────────
   app.delete('/api/wallets/:address', async (req: Request, res: Response) => {
     const removed = db.removeWallet(req.params.address)
