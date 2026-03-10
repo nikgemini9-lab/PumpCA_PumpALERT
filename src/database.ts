@@ -1,6 +1,6 @@
 import { createClient, Client } from '@libsql/client'
 import path from 'path'
-import { Token, Wallet, WalletHolding, RecentAlert } from './types'
+import { Token, Wallet, WalletHolding, RecentAlert, OgRadarHit } from './types'
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'pump_alert.db')
 
@@ -59,9 +59,23 @@ export async function initDatabase(): Promise<void> {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS og_radar (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      migrated_mint   TEXT NOT NULL UNIQUE,
+      migrated_name   TEXT NOT NULL,
+      migrated_symbol TEXT NOT NULL,
+      migrated_mc     REAL NOT NULL,
+      og_mint         TEXT NOT NULL,
+      og_name         TEXT NOT NULL,
+      og_symbol       TEXT NOT NULL,
+      og_mc           REAL NOT NULL,
+      og_age_hours    INTEGER NOT NULL,
+      detected_at     INTEGER NOT NULL
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_alerts_mint_sent ON alerts(mint, sent_at)`,
     `CREATE INDEX IF NOT EXISTS idx_tokens_active ON tokens(active)`,
     `CREATE INDEX IF NOT EXISTS idx_holdings_wallet ON wallet_holdings(wallet_address)`,
+    `CREATE INDEX IF NOT EXISTS idx_og_radar_detected ON og_radar(detected_at)`,
   ]
 
   for (const sql of statements) {
@@ -388,6 +402,57 @@ export async function deleteKV(key: string): Promise<void> {
     sql: 'DELETE FROM kv_store WHERE key = ?',
     args: [key],
   })
+}
+
+// ── OG Radar ──────────────────────────────────────────────────────────────────
+
+export async function addOgRadarHit(hit: {
+  migratedMint: string
+  migratedName: string
+  migratedSymbol: string
+  migratedMc: number
+  ogMint: string
+  ogName: string
+  ogSymbol: string
+  ogMc: number
+  ogAgeHours: number
+}): Promise<boolean> {
+  try {
+    await client.execute({
+      sql: `INSERT INTO og_radar
+              (migrated_mint, migrated_name, migrated_symbol, migrated_mc,
+               og_mint, og_name, og_symbol, og_mc, og_age_hours, detected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        hit.migratedMint, hit.migratedName, hit.migratedSymbol, hit.migratedMc,
+        hit.ogMint, hit.ogName, hit.ogSymbol, hit.ogMc, hit.ogAgeHours, Date.now(),
+      ],
+    })
+    return true
+  } catch {
+    // UNIQUE constraint on migrated_mint — already stored
+    return false
+  }
+}
+
+export async function getOgRadarHits(limit = 50): Promise<OgRadarHit[]> {
+  const rows = (await client.execute({
+    sql: 'SELECT * FROM og_radar ORDER BY detected_at DESC LIMIT ?',
+    args: [limit],
+  })).rows as any[]
+  return rows.map(r => ({
+    id: Number(r.id),
+    migratedMint: r.migrated_mint as string,
+    migratedName: r.migrated_name as string,
+    migratedSymbol: r.migrated_symbol as string,
+    migratedMc: Number(r.migrated_mc),
+    ogMint: r.og_mint as string,
+    ogName: r.og_name as string,
+    ogSymbol: r.og_symbol as string,
+    ogMc: Number(r.og_mc),
+    ogAgeHours: Number(r.og_age_hours),
+    detectedAt: Number(r.detected_at),
+  }))
 }
 
 export function closeDatabase(): void {

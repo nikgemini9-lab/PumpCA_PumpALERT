@@ -121,3 +121,17 @@ export interface RecentAlert {
   alertType: string
   sentAt: number
 }
+
+export interface OgRadarHit {
+  id: number
+  migratedMint: string
+  migratedName: string
+  migratedSymbol: string
+  migratedMc: number
+  ogMint: string
+  ogName: string
+  ogSymbol: string
+  ogMc: number
+  ogAgeHours: number
+  detectedAt: number
+}

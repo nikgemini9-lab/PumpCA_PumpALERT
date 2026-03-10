@@ -277,6 +277,11 @@ export function startServer(
     res.json(await db.getRecentAlerts(50))
   })
 
+  // ── GET /api/og-radar ─────────────────────────────────────────────────────
+  app.get('/api/og-radar', async (_req: Request, res: Response) => {
+    res.json(await db.getOgRadarHits(50))
+  })
+
   // ── GET /api/users ────────────────────────────────────────────────────────
   app.get('/api/users', (_req: Request, res: Response) => {
     res.json(config.telegram.users.map(u => u.name))

@@ -22,6 +22,7 @@ import { WalletPoller } from './walletPoller'
 import { setupBot } from './bot'
 import { startServer } from './server'
 import { syncWebhook } from './heliusWebhook'
+import { OgHunterRadar } from './ogRadar'
 import { MonitorStatus } from './types'
 
 async function main(): Promise<void> {
@@ -48,6 +49,9 @@ async function main(): Promise<void> {
   // 6. Wallet holdings poller
   const walletPoller = new WalletPoller(monitor)
 
+  // 7. OG Hunter Radar
+  const ogRadar = new OgHunterRadar(bot)
+
   // Wire up events
   monitor.on('buy', event => {
     alertManager.handleOnChainBuy(event)
@@ -55,6 +59,7 @@ async function main(): Promise<void> {
 
   poller.on('data', (mint: string, pair: any) => {
     alertManager.handleDexScreenerData(mint, pair)
+    ogRadar.handleDexData(mint, pair)
   })
 
   poller.on('social', (mint: string, handle: string, followers: number, delta: number, deltaPct: number) => {

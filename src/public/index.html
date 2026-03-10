@@ -507,6 +507,102 @@
       color: var(--red);
     }
 
+    /* ── OG RADAR PANEL ──────────────────────────────────────── */
+    .og-radar-panel {
+      background: var(--bg2);
+      border: 1px solid #3d2a00;
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin: 0 24px 24px;
+    }
+
+    .og-radar-panel .panel-header {
+      background: linear-gradient(90deg, #1a1000, #12121a);
+      border-bottom: 1px solid #3d2a00;
+    }
+
+    .og-radar-panel .panel-title {
+      color: #ffd32a;
+    }
+
+    .og-radar-hit {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+    .og-radar-hit:last-child { border-bottom: none; }
+    .og-radar-hit:hover { background: #1a1500; }
+
+    .og-radar-token {
+      min-width: 0;
+    }
+    .og-radar-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .og-radar-label.migrated { color: var(--blue); }
+    .og-radar-label.og       { color: #ffd32a; }
+
+    .og-radar-name {
+      font-weight: 600;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .og-radar-mc {
+      font-size: 12px;
+      margin-top: 2px;
+    }
+    .og-radar-mc.migrated { color: var(--blue); }
+    .og-radar-mc.og       { color: var(--green); }
+
+    .og-radar-arrow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      color: #ffd32a;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .og-radar-arrow small {
+      font-size: 9px;
+      color: var(--text-dim);
+      text-align: center;
+      line-height: 1.2;
+    }
+
+    .og-radar-links {
+      display: flex;
+      gap: 6px;
+      margin-top: 5px;
+      flex-wrap: wrap;
+    }
+    .og-radar-links a {
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 10px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+    }
+    .og-radar-links a:hover { color: var(--text); border-color: var(--text-dim); }
+
+    .og-radar-time {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
+
     /* ── SPINNER ─────────────────────────────────────────────── */
     .spinner {
       display: inline-block;
@@ -613,10 +709,25 @@
         <span class="badge" id="alerts-badge">0</span>
       </div>
       <div id="alerts-list">
-        <div class="empty" style="padding:20px">No alerts yet</div>
+        <div class="empty" style="padding:20px">No alerts fired yet</div>
       </div>
     </div>
+
   </main>
+
+  <!-- ── OG HUNTER RADAR PANEL ──────────────────────────────── -->
+  <div class="og-radar-panel">
+    <div class="panel-header">
+      <span class="panel-title">🎯 OG Hunter Radar</span>
+      <span class="badge" id="og-radar-badge">0</span>
+    </div>
+    <div id="og-radar-list">
+      <div class="empty" style="padding:20px">
+        No hits yet — watching for migrated tokens with a sleeping OG...
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <div id="toast"></div>
@@ -627,6 +738,7 @@
   let wallets = []
   let watchlist = []
   let alerts = []
+  let ogRadarHits = []
   let selectedWalletAddr = null
   let lastSync = null
   let refreshTimer = null
@@ -695,14 +807,16 @@
   // ── REFRESH ──────────────────────────────────────────────────────
   async function refresh() {
     try {
-      ;[wallets, watchlist, alerts] = await Promise.all([
+      ;[wallets, watchlist, alerts, ogRadarHits] = await Promise.all([
         apiGet('/api/wallets'),
         apiGet('/api/watchlist'),
         apiGet('/api/alerts'),
+        apiGet('/api/og-radar'),
       ])
       renderWallets()
       renderWatchlist()
       renderAlerts()
+      renderOgRadar()
       renderWalletTabs()
       if (selectedWalletAddr) renderHoldings(selectedWalletAddr)
       lastSync = new Date()
@@ -940,6 +1054,57 @@
         <div class="alert-time">${timeAgo(a.sentAt)}</div>
       </div>
     `).join('')
+  }
+
+  // ── OG RADAR ──────────────────────────────────────────────────────
+  function renderOgRadar() {
+    const el = document.getElementById('og-radar-list')
+    document.getElementById('og-radar-badge').textContent = ogRadarHits.length
+    if (ogRadarHits.length === 0) {
+      el.innerHTML = '<div class="empty" style="padding:20px">No hits yet — watching for migrated tokens with a sleeping OG...</div>'
+      return
+    }
+    el.innerHTML = ogRadarHits.map(h => `
+      <div class="og-radar-hit">
+        <div class="og-radar-token">
+          <div class="og-radar-label migrated">⬆ Migrated (pumping)</div>
+          <div class="og-radar-name">${esc(h.migratedName)} <span style="color:var(--text-dim);font-weight:400">$${esc(h.migratedSymbol)}</span></div>
+          <div class="og-radar-mc migrated">MC ${fmtNum(h.migratedMc)}</div>
+          <div class="og-radar-links">
+            <a href="https://axiom.trade/t/${h.migratedMint}" target="_blank">Axiom</a>
+            <a href="https://dexscreener.com/solana/${h.migratedMint}" target="_blank">DexScr</a>
+          </div>
+          <div class="og-radar-time" onclick="copyMint(this,'${h.migratedMint}')" title="Click to copy" style="cursor:pointer">${h.migratedMint}</div>
+        </div>
+
+        <div class="og-radar-arrow">
+          👑
+          <small>OG<br>FOUND</small>
+        </div>
+
+        <div class="og-radar-token">
+          <div class="og-radar-label og">👑 OG Token (sleeping)</div>
+          <div class="og-radar-name">${esc(h.ogName)} <span style="color:var(--text-dim);font-weight:400">$${esc(h.ogSymbol)}</span></div>
+          <div class="og-radar-mc og">MC ${fmtNum(h.ogMc)} · ${fmtAge(h.ogAgeHours)} old</div>
+          <div class="og-radar-links">
+            <a href="https://axiom.trade/t/${h.ogMint}" target="_blank">Axiom</a>
+            <a href="https://dexscreener.com/solana/${h.ogMint}" target="_blank">DexScr</a>
+            <a href="https://pump.fun/${h.ogMint}" target="_blank">pump.fun</a>
+          </div>
+          <div class="og-radar-time" onclick="copyMint(this,'${h.ogMint}')" title="Click to copy" style="cursor:pointer">${h.ogMint}</div>
+          <div class="og-radar-time">Detected ${timeAgo(h.detectedAt)}</div>
+        </div>
+      </div>
+    `).join('')
+  }
+
+  function fmtAge(hours) {
+    if (!hours && hours !== 0) return '?'
+    if (hours < 1) return '<1h'
+    if (hours < 24) return hours + 'h'
+    const d = Math.floor(hours / 24)
+    const h = hours % 24
+    return h === 0 ? d + 'd' : d + 'd ' + h + 'h'
   }
 
   // ── OWNER SELECT ─────────────────────────────────────────────────
