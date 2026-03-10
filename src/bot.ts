@@ -22,6 +22,7 @@ import * as db from './database'
 import { SolanaMonitor } from './monitor'
 import { MonitorStatus } from './types'
 import { syncWebhook } from './heliusWebhook'
+import { fetchPumpCoin, findOgToken, searchAllByName, fmtAge } from './ogFinder'
 
 export function setupBot(
   bot: TelegramBot,
@@ -58,6 +59,7 @@ export function setupBot(
       `/add &lt;CA&gt; — Track a token`,
       `/remove &lt;CA&gt; — Stop tracking`,
       `/list — Show tracked tokens`,
+      `/og &lt;name&gt; — Find OG token by name`,
       `/wallets — List tracked wallets`,
       `/addwallet &lt;nik|josh&gt; &lt;address&gt; — Add wallet`,
       `/status — Monitor health`,
@@ -107,6 +109,9 @@ export function setupBot(
         ``,
         `<code>/set cooldown &lt;min&gt;</code>`,
         `  Set cooldown between alerts per token`,
+        ``,
+        `<code>/og &lt;name or symbol&gt;</code>`,
+        `  Search for OG token by name/symbol — sorted oldest first`,
       ].join('\n')
     )
   })
@@ -146,6 +151,11 @@ export function setupBot(
         `👁 Watching on-chain bonding curve + DexScreener polls.`,
         `You'll get an alert when it pumps!`,
       ].join('\n')
+    )
+
+    // Async OG check — sends follow-up if an older same-name token exists
+    checkForOg(bot, String(msg.chat.id), mint).catch(err =>
+      console.error('[OG] check error:', err)
     )
   })
 
@@ -385,7 +395,82 @@ export function setupBot(
     }
   })
 
+  // ── /og <name or symbol> ──────────────────────────────────────────────────
+  bot.onText(/\/og (.+)/, async (msg, match) => {
+    if (!isAuthorized(msg.chat.id)) return
+
+    const term = match?.[1]?.trim()
+    if (!term) {
+      await reply(msg, `❌ Usage: <code>/og &lt;token name or symbol&gt;</code>`)
+      return
+    }
+
+    await reply(msg, `🔍 Searching pump.fun for "<b>${escHtml(term)}</b>"…`)
+
+    const results = await searchAllByName(term)
+    if (results.length === 0) {
+      await reply(msg, `ℹ️ No tokens found matching "<b>${escHtml(term)}</b>"`)
+      return
+    }
+
+    const lines: string[] = [
+      `<b>OG Token Search: "${escHtml(term)}"</b>`,
+      `Sorted oldest → newest (${results.length} found)`,
+      ``,
+    ]
+
+    for (const [i, t] of results.slice(0, 8).entries()) {
+      const mc = t.marketCapUsd > 0 ? `$${fmtNum(t.marketCapUsd)}` : 'no MC'
+      const badge = i === 0 ? `👑 OG  ` : `${i + 1}.   `
+      lines.push(
+        `${badge}<b>${escHtml(t.name)}</b>  $${escHtml(t.symbol)}`,
+        `   ⏳ Age: <b>${fmtAge(t.ageHours)}</b>  💎 MC: <b>${mc}</b>`,
+        `   <code>${t.mint}</code>`,
+        `   <a href="https://axiom.trade/t/${t.mint}">Axiom</a>  |  <a href="https://dexscreener.com/solana/${t.mint}">DexScr</a>  |  <a href="https://pump.fun/${t.mint}">pump.fun</a>`,
+        ``
+      )
+    }
+
+    await reply(msg, lines.join('\n'))
+  })
+
   console.log('[Bot] Telegram bot commands registered.')
+}
+
+/** Fetch pump.fun metadata for a mint, then check for an older OG token.
+ *  Sends a follow-up Telegram message if one is found. */
+async function checkForOg(bot: TelegramBot, chatId: string, mint: string): Promise<void> {
+  const coin = await fetchPumpCoin(mint)
+  if (!coin?.name || coin.name === 'Unknown') return
+
+  const og = await findOgToken(mint, coin.name, coin.symbol, coin.created_timestamp)
+  if (!og) return
+
+  const mcStr = og.marketCapUsd > 0 ? `$${fmtNum(og.marketCapUsd)}` : 'unknown MC'
+
+  const text = [
+    `⚠️ <b>OG TOKEN DETECTED!</b>`,
+    ``,
+    `The token you added (<b>${escHtml(coin.name)}</b> $${escHtml(coin.symbol)}) has an older version on pump.fun:`,
+    ``,
+    `<b>${escHtml(og.name)}</b>  $${escHtml(og.symbol)}`,
+    `<code>${og.mint}</code>`,
+    `⏳ Age: <b>${fmtAge(og.ageHours)} old</b>`,
+    `💎 MC: <b>${mcStr}</b>`,
+    ``,
+    `⚡ Community attention may shift to this OG — consider tracking it too.`,
+    ``,
+    [
+      `<a href="https://axiom.trade/t/${og.mint}">📊 Axiom</a>`,
+      `<a href="https://dexscreener.com/solana/${og.mint}">📈 DexScr</a>`,
+      `<a href="https://pump.fun/${og.mint}">🎱 pump.fun</a>`,
+    ].join('  |  '),
+  ].join('\n')
+
+  await bot.sendMessage(chatId, text, {
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+  })
 }
 
 function isValidSolanaAddress(addr: string): boolean {
