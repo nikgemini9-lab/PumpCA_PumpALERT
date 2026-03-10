@@ -30,7 +30,7 @@ import { WalletPoller, SKIP_MINTS } from './walletPoller'
 import { syncWebhook, parseWebhookTransfers } from './heliusWebhook'
 
 export function startServer(
-  getStatus: () => MonitorStatus,
+  getStatus: () => Promise<MonitorStatus>,
   monitor: SolanaMonitor,
   walletPoller: WalletPoller
 ): void {
@@ -47,7 +47,7 @@ export function startServer(
   })
 
   // ── Helius webhook receiver (no dashboard auth — uses authHeader from Helius) ──
-  app.post('/api/webhook/helius', (req: Request, res: Response) => {
+  app.post('/api/webhook/helius', async (req: Request, res: Response) => {
     // Verify the authHeader Helius was configured with (equals DASHBOARD_SECRET if set)
     if (config.dashboard.secret) {
       const provided = req.headers.authorization
@@ -62,7 +62,7 @@ export function startServer(
 
     try {
       const transactions = Array.isArray(req.body) ? req.body : [req.body]
-      const trackedWallets = new Set(db.getWallets().map(w => w.address))
+      const trackedWallets = new Set((await db.getWallets()).map(w => w.address))
       const events = parseWebhookTransfers(transactions, trackedWallets)
 
       for (const event of events) {
@@ -70,11 +70,11 @@ export function startServer(
         if (SKIP_MINTS.has(event.mint)) continue
 
         // Update holdings directly from webhook data — zero RPC, zero credits
-        db.adjustHolding(event.walletAddress, event.mint, event.delta)
+        await db.adjustHolding(event.walletAddress, event.mint, event.delta)
 
         // If this is a new token received, add it to the watchlist
         if (event.delta > 0) {
-          const added = db.addToken(event.mint, 'Unknown', '?', 'wallet', event.walletAddress)
+          const added = await db.addToken(event.mint, 'Unknown', '?', 'wallet', event.walletAddress)
           if (added) {
             console.log(`[Webhook] New token for ${event.walletAddress.slice(0, 8)}...: ${event.mint.slice(0, 8)}... — added to watchlist`)
             monitor.subscribeToToken(event.mint).catch(err => {
@@ -109,9 +109,9 @@ export function startServer(
   })
 
   // ── GET /api/status ───────────────────────────────────────────────────────
-  app.get('/api/status', (_req: Request, res: Response) => {
-    const status = getStatus()
-    const wallets = db.getWallets()
+  app.get('/api/status', async (_req: Request, res: Response) => {
+    const status = await getStatus()
+    const wallets = await db.getWallets()
     res.json({
       online: true,
       uptime_ms: status.uptime,
@@ -126,24 +126,23 @@ export function startServer(
   })
 
   // ── GET /api/watchlist ────────────────────────────────────────────────────
-  app.get('/api/watchlist', (_req: Request, res: Response) => {
-    const tokens = db.getActiveTokens()
-    res.json(
-      tokens.map(t => ({
-        mint: t.mint,
-        name: t.name,
-        symbol: t.symbol,
-        price_usd: t.priceUsd,
-        market_cap: t.marketCap,
-        added_at: t.addedAt,
-        source: t.source,
-        wallet_source: t.walletSource,
-        alert_count: db.getAlertCount(t.mint),
-        twitter_handle: t.twitterHandle ?? null,
-        twitter_followers: t.twitterFollowers ?? null,
-        twitter_followers_prev: t.twitterFollowersPrev ?? null,
-      }))
-    )
+  app.get('/api/watchlist', async (_req: Request, res: Response) => {
+    const tokens = await db.getActiveTokens()
+    const result = await Promise.all(tokens.map(async t => ({
+      mint: t.mint,
+      name: t.name,
+      symbol: t.symbol,
+      price_usd: t.priceUsd,
+      market_cap: t.marketCap,
+      added_at: t.addedAt,
+      source: t.source,
+      wallet_source: t.walletSource,
+      twitter_handle: t.twitterHandle ?? null,
+      twitter_followers: t.twitterFollowers ?? null,
+      twitter_followers_prev: t.twitterFollowersPrev ?? null,
+      alert_count: await db.getAlertCount(t.mint),
+    })))
+    res.json(result)
   })
 
   // ── POST /api/watchlist ───────────────────────────────────────────────────
@@ -154,7 +153,7 @@ export function startServer(
       return
     }
 
-    const added = db.addToken(mint.trim(), 'Unknown', '?', 'manual', null)
+    const added = await db.addToken(mint.trim(), 'Unknown', '?', 'manual', null)
     if (!added) {
       res.status(409).json({ error: 'Already tracking this token' })
       return
@@ -168,7 +167,7 @@ export function startServer(
   })
 
   // ── POST /api/watchlist/:mint/twitter — manually set Twitter handle ────────
-  app.post('/api/watchlist/:mint/twitter', (req: Request, res: Response) => {
+  app.post('/api/watchlist/:mint/twitter', async (req: Request, res: Response) => {
     const { mint } = req.params
     const { handle } = req.body as { handle?: string }
     if (!handle || typeof handle !== 'string') {
@@ -177,14 +176,14 @@ export function startServer(
     }
     const clean = handle.replace(/^@/, '').trim().toLowerCase()
     if (!clean) { res.status(400).json({ error: 'Invalid handle' }); return }
-    db.updateTokenMetadata(mint, { twitterHandle: clean })
+    await db.updateTokenMetadata(mint, { twitterHandle: clean })
     res.json({ ok: true, handle: clean })
   })
 
   // ── DELETE /api/watchlist/:mint ───────────────────────────────────────────
   app.delete('/api/watchlist/:mint', async (req: Request, res: Response) => {
     const { mint } = req.params
-    const removed = db.removeToken(mint)
+    const removed = await db.removeToken(mint)
     if (!removed) {
       res.status(404).json({ error: 'Token not found' })
       return
@@ -194,23 +193,22 @@ export function startServer(
   })
 
   // ── GET /api/wallets ──────────────────────────────────────────────────────
-  app.get('/api/wallets', (_req: Request, res: Response) => {
-    const wallets = db.getWallets()
-    res.json(
-      wallets.map(w => ({
-        address: w.address,
-        label: w.label,
-        added_at: w.addedAt,
-        holdings: db.getWalletHoldings(w.address).map((h: any) => ({
-          mint: h.mint,
-          amount: h.amount,
-          symbol: h.symbol,
-          name: h.name,
-          price_usd: h.priceUsd,
-          market_cap: h.marketCap,
-        })),
-      }))
-    )
+  app.get('/api/wallets', async (_req: Request, res: Response) => {
+    const wallets = await db.getWallets()
+    const result = await Promise.all(wallets.map(async w => ({
+      address: w.address,
+      label: w.label,
+      added_at: w.addedAt,
+      holdings: (await db.getWalletHoldings(w.address)).map((h: any) => ({
+        mint: h.mint,
+        amount: h.amount,
+        symbol: h.symbol,
+        name: h.name,
+        price_usd: h.priceUsd,
+        market_cap: h.marketCap,
+      })),
+    })))
+    res.json(result)
   })
 
   // ── POST /api/wallets ─────────────────────────────────────────────────────
@@ -230,7 +228,7 @@ export function startServer(
       return
     }
 
-    const added = db.addWallet(address.trim(), ownerName, owner.chatId)
+    const added = await db.addWallet(address.trim(), ownerName, owner.chatId)
     if (!added) {
       res.status(409).json({ error: 'Wallet already tracked' })
       return
@@ -249,7 +247,7 @@ export function startServer(
 
   // ── POST /api/wallets/:address/refresh ───────────────────────────────────
   app.post('/api/wallets/:address/refresh', async (req: Request, res: Response) => {
-    const wallet = db.getWallet(req.params.address)
+    const wallet = await db.getWallet(req.params.address)
     if (!wallet) {
       res.status(404).json({ error: 'Wallet not found' })
       return
@@ -262,7 +260,7 @@ export function startServer(
 
   // ── DELETE /api/wallets/:address ──────────────────────────────────────────
   app.delete('/api/wallets/:address', async (req: Request, res: Response) => {
-    const removed = db.removeWallet(req.params.address)
+    const removed = await db.removeWallet(req.params.address)
     if (!removed) {
       res.status(404).json({ error: 'Wallet not found' })
       return
@@ -275,8 +273,8 @@ export function startServer(
   })
 
   // ── GET /api/alerts ───────────────────────────────────────────────────────
-  app.get('/api/alerts', (_req: Request, res: Response) => {
-    res.json(db.getRecentAlerts(50))
+  app.get('/api/alerts', async (_req: Request, res: Response) => {
+    res.json(await db.getRecentAlerts(50))
   })
 
   // ── GET /api/users ────────────────────────────────────────────────────────

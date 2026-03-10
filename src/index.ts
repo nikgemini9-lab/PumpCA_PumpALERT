@@ -2,14 +2,16 @@
  * PumpAlert — main entry point
  *
  * Starts:
- *   1. SQLite database
+ *   1. Turso (persistent cloud SQLite) or local SQLite
  *   2. Telegram bot (polling mode)
  *   3. Solana WebSocket monitor (bonding curves)
  *   4. DexScreener poller
  *   5. Wallet holdings poller (Nik + Josh wallets)
  *   6. Express HTTP server (dashboard + REST API)
+ *   7. Keep-alive self-ping (prevents Render free tier from sleeping)
  */
 
+import axios from 'axios'
 import TelegramBot from 'node-telegram-bot-api'
 import { config } from './config'
 import { initDatabase, getActiveTokens } from './database'
@@ -27,8 +29,8 @@ async function main(): Promise<void> {
   console.log('  PumpAlert — pump.fun CA tracker')
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
 
-  // 1. Database
-  initDatabase()
+  // 1. Database (Turso cloud or local SQLite)
+  await initDatabase()
 
   // 2. Telegram bot
   const bot = new TelegramBot(config.telegram.botToken, { polling: true })
@@ -59,10 +61,10 @@ async function main(): Promise<void> {
     alertManager.handleFollowerSpike(mint, handle, followers, delta, deltaPct)
   })
 
-  // Status helper
+  // Status helper (async — queries DB for live token count)
   const startedAt = Date.now()
-  const getStatus = (): MonitorStatus => ({
-    trackedTokens: getActiveTokens().length,
+  const getStatus = async (): Promise<MonitorStatus> => ({
+    trackedTokens: (await getActiveTokens()).length,
     onchainSubscriptions: monitor.getSubscriptionCount(),
     lastPollAt: poller.getLastPollAt(),
     uptime: Date.now() - startedAt,
@@ -73,7 +75,7 @@ async function main(): Promise<void> {
   setupBot(bot, monitor, getStatus)
 
   // Subscribe to all existing tokens in DB
-  const existingTokens = getActiveTokens()
+  const existingTokens = await getActiveTokens()
   if (existingTokens.length > 0) {
     console.log(`[Init] Subscribing to ${existingTokens.length} existing tokens...`)
     await monitor.subscribeAll(existingTokens.map(t => t.mint))
@@ -91,7 +93,20 @@ async function main(): Promise<void> {
   // Register / update Helius webhook (async, non-blocking)
   syncWebhook().catch(err => console.error('[Init] Webhook sync error:', err))
 
-  // Print config summary
+  // Keep-alive: self-ping /health every 13 min so Render free tier never sleeps.
+  // Pair with a free UptimeRobot monitor (https://uptimerobot.com) for external pings.
+  if (config.appUrl) {
+    setInterval(async () => {
+      try {
+        await axios.get(`${config.appUrl}/health`, { timeout: 5_000 })
+        console.log('[KeepAlive] Pinged /health — service staying awake')
+      } catch (err: any) {
+        console.warn('[KeepAlive] Self-ping failed:', err?.message)
+      }
+    }, 13 * 60_000)
+    console.log('[KeepAlive] Self-ping enabled every 13 min (prevents Render sleep)')
+  }
+
   console.log(
     `[Config] Thresholds — price: +${config.alerts.priceChangePercent}%` +
       ` | buys: ${config.alerts.buyCountThreshold} in ${config.alerts.buyCountWindowMinutes}min` +

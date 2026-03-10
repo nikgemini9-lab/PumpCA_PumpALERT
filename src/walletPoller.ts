@@ -90,7 +90,7 @@ export class WalletPoller {
   }
 
   private async pollAll(): Promise<void> {
-    const wallets = db.getWallets()
+    const wallets = await db.getWallets()
     if (wallets.length === 0) return
     for (const wallet of wallets) {
       try {
@@ -130,14 +130,14 @@ export class WalletPoller {
 
     // Don't wipe existing holdings if RPC returned nothing — likely a silent failure
     if (holdings.length === 0 && accounts.length === 0) {
-      const existing = db.getWalletHoldings(address)
+      const existing = await db.getWalletHoldings(address)
       if (existing.length > 0) {
         console.warn(`[WalletPoller] RPC returned 0 accounts for ${label} but DB has ${existing.length} holdings — skipping update (likely RPC failure)`)
         return
       }
     }
 
-    db.setWalletHoldings(address, holdings)
+    await db.setWalletHoldings(address, holdings)
 
     let newCount = 0
     for (const holding of holdings) {
@@ -147,7 +147,7 @@ export class WalletPoller {
       }
 
       // Skip watchlist addition if holding has a known price and value < $5
-      const existingToken = db.getToken(holding.mint)
+      const existingToken = await db.getToken(holding.mint)
       if (existingToken?.priceUsd) {
         const priceUsd = parseFloat(existingToken.priceUsd)
         const valueUsd = holding.amount * priceUsd
@@ -157,7 +157,7 @@ export class WalletPoller {
         }
       }
 
-      const added = db.addToken(holding.mint, 'Unknown', '?', 'wallet', address)
+      const added = await db.addToken(holding.mint, 'Unknown', '?', 'wallet', address)
       if (added) {
         newCount++
         console.log(`[WalletPoller] New holding from ${label}: ${holding.mint.slice(0, 8)}...`)
@@ -181,7 +181,7 @@ export class WalletPoller {
   async resolveUnknownMetadata(): Promise<void> {
     if (!config.solana.heliusApiKey) return
 
-    const unknown = db.getAllTokens().filter(t => t.name === 'Unknown' || t.symbol === '?')
+    const unknown = (await db.getAllTokens()).filter(t => t.name === 'Unknown' || t.symbol === '?')
     if (unknown.length === 0) return
 
     const mints = unknown.map(t => t.mint)
@@ -203,7 +203,7 @@ export class WalletPoller {
           const name: string | undefined = meta?.name?.trim()
           const symbol: string | undefined = meta?.symbol?.trim()
           if ((name && name !== 'Unknown') || (symbol && symbol !== '?')) {
-            db.updateTokenMetadata(mint, {
+            await db.updateTokenMetadata(mint, {
               name: name || undefined,
               symbol: symbol || undefined,
             })

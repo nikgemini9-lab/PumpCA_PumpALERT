@@ -45,20 +45,32 @@ export class AlertManager {
     const exceedsBuyThreshold = buyCount >= config.alerts.buyCountThreshold
     const exceedsPriceThreshold = pctChange >= config.alerts.priceChangePercent
 
-    if ((exceedsBuyThreshold || exceedsPriceThreshold) && !this.isOnCooldown(mint)) {
-      const token = db.getToken(mint)
-      this.sendAlert({
-        mint,
-        name: token?.name ?? 'Unknown',
-        symbol: token?.symbol ?? '?',
-        buyCount,
-        priceChangePct: pctChange,
-        solAmount,
-        priceUsd: token?.priceUsd ?? undefined,
-        marketCapUsd: token?.marketCap ?? undefined,
-        source: 'onchain',
-      })
+    if (exceedsBuyThreshold || exceedsPriceThreshold) {
+      this.handleOnChainBuyAsync(mint, solAmount, pctChange, buyCount).catch(err =>
+        console.error('[Alert] handleOnChainBuy error:', err)
+      )
     }
+  }
+
+  private async handleOnChainBuyAsync(
+    mint: string,
+    solAmount: number,
+    pctChange: number,
+    buyCount: number
+  ): Promise<void> {
+    if (await this.isOnCooldown(mint)) return
+    const token = await db.getToken(mint)
+    await this.sendAlert({
+      mint,
+      name: token?.name ?? 'Unknown',
+      symbol: token?.symbol ?? '?',
+      buyCount,
+      priceChangePct: pctChange,
+      solAmount,
+      priceUsd: token?.priceUsd ?? undefined,
+      marketCapUsd: token?.marketCap ?? undefined,
+      source: 'onchain',
+    })
   }
 
   // ── DexScreener update (from DexScreenerPoller) ───────────────────────────
@@ -71,26 +83,51 @@ export class AlertManager {
     const exceedsBuyThreshold = buysM5 >= config.alerts.buyCountThreshold
     const exceedsPriceThreshold = priceChangePct >= config.alerts.priceChangePercent
 
-    if ((exceedsBuyThreshold || exceedsPriceThreshold) && !this.isOnCooldown(mint, currentPrice)) {
-      this.sendAlert({
-        mint,
-        name: pair.baseToken.name,
-        symbol: pair.baseToken.symbol,
-        buyCount: buysM5,
-        priceChangePct,
-        volumeUsd: pair.volume?.m5,
-        marketCapUsd: pair.fdv ?? pair.marketCap,
-        priceUsd: pair.priceUsd,
-        source: 'dexscreener',
-      })
+    if (exceedsBuyThreshold || exceedsPriceThreshold) {
+      this.handleDexScreenerAsync(mint, pair, priceChangePct, buysM5, currentPrice).catch(err =>
+        console.error('[Alert] handleDexScreenerData error:', err)
+      )
     }
+  }
+
+  private async handleDexScreenerAsync(
+    mint: string,
+    pair: DexScreenerPair,
+    priceChangePct: number,
+    buysM5: number,
+    currentPrice: number | undefined
+  ): Promise<void> {
+    if (await this.isOnCooldown(mint, currentPrice)) return
+    await this.sendAlert({
+      mint,
+      name: pair.baseToken.name,
+      symbol: pair.baseToken.symbol,
+      buyCount: buysM5,
+      priceChangePct,
+      volumeUsd: pair.volume?.m5,
+      marketCapUsd: pair.fdv ?? pair.marketCap,
+      priceUsd: pair.priceUsd,
+      source: 'dexscreener',
+    })
   }
 
   // ── Social follower spike (from SocialPoller) ─────────────────────────────
 
   handleFollowerSpike(mint: string, handle: string, followers: number, deltaAbs: number, deltaPct: number): void {
-    const token = db.getToken(mint)
-    this.sendAlert({
+    this.handleFollowerSpikeAsync(mint, handle, followers, deltaAbs, deltaPct).catch(err =>
+      console.error('[Alert] handleFollowerSpike error:', err)
+    )
+  }
+
+  private async handleFollowerSpikeAsync(
+    mint: string,
+    handle: string,
+    followers: number,
+    deltaAbs: number,
+    deltaPct: number
+  ): Promise<void> {
+    const token = await db.getToken(mint)
+    await this.sendAlert({
       mint,
       name: token?.name ?? 'Unknown',
       symbol: token?.symbol ?? '?',
@@ -106,23 +143,21 @@ export class AlertManager {
 
   // ── Core send ─────────────────────────────────────────────────────────────
 
-  private sendAlert(data: AlertData): void {
-    // Anchor the price so the next re-alert requires another full % move from here
+  private async sendAlert(data: AlertData): Promise<void> {
     if (data.priceUsd) {
       this.priceAtLastAlert.set(data.mint, parseFloat(data.priceUsd))
     }
 
-    const targets = this.resolveTargets(data.mint)
+    const targets = await this.resolveTargets(data.mint)
 
     if (targets.length === 0) {
       console.warn('[Alert] No chat IDs configured, skipping alert.')
       return
     }
 
-    db.recordAlert(data.mint, 'pump')
+    await db.recordAlert(data.mint, 'pump')
 
-    // Find wallets holding this token for the "held by" annotation
-    const holders = db.getWalletsHoldingToken(data.mint)
+    const holders = await db.getWalletsHoldingToken(data.mint)
     const holderNames = holders.map(w => w.label)
 
     const message = formatMessage(data, config.alerts, holderNames)
@@ -142,60 +177,37 @@ export class AlertManager {
     }
   }
 
-  /**
-   * Determine which chat IDs should receive this alert.
-   *
-   * Rules:
-   *   - If the token was auto-added from a wallet scan: alert only the wallet owner
-   *   - If added manually (or unknown source): alert all configured users
-   */
-  private resolveTargets(mint: string): string[] {
-    const token = db.getToken(mint)
+  private async resolveTargets(mint: string): Promise<string[]> {
+    const token = await db.getToken(mint)
 
     if (token?.source === 'wallet' && token.walletSource) {
-      const wallet = db.getWallet(token.walletSource)
+      const wallet = await db.getWallet(token.walletSource)
       if (wallet?.ownerChatId) return [wallet.ownerChatId]
     }
 
-    // Manual / unknown source → all users
     const allChatIds = config.telegram.users.map(u => u.chatId).filter(Boolean)
     return allChatIds
   }
 
-  /**
-   * Returns true if this mint should be suppressed right now.
-   *
-   * Logic:
-   *  1. Hard minimum gap (2 min) — prevents burst spam.
-   *  2. After the minimum gap, only suppress if the price hasn't moved
-   *     another `priceChangePercent`% from the price when the last alert fired.
-   *     This means a token that keeps pumping will keep alerting, while a
-   *     token that spiked once and flatlined won't spam.
-   *  3. If no price is available, fall back to the configured cooldown.
-   */
-  private isOnCooldown(mint: string, currentPrice?: number): boolean {
-    const lastAlert = db.getLastAlertTime(mint)
+  private async isOnCooldown(mint: string, currentPrice?: number): Promise<boolean> {
+    const lastAlert = await db.getLastAlertTime(mint)
     if (!lastAlert) return false
 
     const timeSince = Date.now() - lastAlert
     if (timeSince < this.MIN_ALERT_GAP_MS) return true
 
-    // Price-anchor check: has price moved enough from the last alert?
     if (currentPrice && this.priceAtLastAlert.has(mint)) {
       const anchor = this.priceAtLastAlert.get(mint)!
       if (anchor > 0) {
         const movePct = Math.abs((currentPrice - anchor) / anchor) * 100
-        // Not moved enough from the anchor — suppress
         if (movePct < config.alerts.priceChangePercent) return true
       }
-      return false // price has moved enough — allow re-alert
+      return false
     }
 
-    // No price info — fall back to configured cooldown
     return timeSince < config.alerts.cooldownMinutes * 60_000
   }
 
-  // Send a plain info message (used by bot commands, errors, etc.)
   async sendMessage(chatId: string, text: string): Promise<void> {
     await this.bot.sendMessage(chatId, text, {
       parse_mode: 'HTML',
@@ -209,7 +221,6 @@ function formatMessage(
   alertConfig: typeof config.alerts,
   holderNames: string[]
 ): string {
-  // Social spike alert — different format
   if (data.source === 'social' && data.twitterHandle) {
     const lines = [
       `👥 <b>COMMUNITY SPIKE!</b>`,
@@ -248,9 +259,7 @@ function formatMessage(
   }
 
   if (data.buyCount) {
-    lines.push(
-      `🛒 Buys   <b>${data.buyCount}</b> in ${alertConfig.buyCountWindowMinutes} min`
-    )
+    lines.push(`🛒 Buys   <b>${data.buyCount}</b> in ${alertConfig.buyCountWindowMinutes} min`)
   }
 
   if (data.solAmount) {

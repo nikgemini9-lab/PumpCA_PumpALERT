@@ -64,7 +64,7 @@ export class DexScreenerPoller extends EventEmitter {
   }
 
   private async poll(): Promise<void> {
-    const tokens = db.getActiveTokens()
+    const tokens = await db.getActiveTokens()
     if (tokens.length === 0) return
 
     const mints = tokens.map(t => t.mint)
@@ -95,7 +95,7 @@ export class DexScreenerPoller extends EventEmitter {
 
           // Prefer circulating marketCap over FDV — they're very different for
           // tokens where not all supply is in circulation
-          db.updateTokenMetadata(mint, {
+          await db.updateTokenMetadata(mint, {
             name: pair.baseToken.name,
             symbol: pair.baseToken.symbol,
             priceUsd: pair.priceUsd,
@@ -132,7 +132,7 @@ export class DexScreenerPoller extends EventEmitter {
    * Emits 'social' events when follower counts spike by >= FOLLOWER_SPIKE_PCT.
    */
   private async pollSocial(): Promise<void> {
-    const tokens = db.getTokensWithTwitter()
+    const tokens = await db.getTokensWithTwitter()
     if (tokens.length === 0) return
 
     const handles = tokens.map(t => t.twitterHandle!).filter(Boolean)
@@ -152,7 +152,7 @@ export class DexScreenerPoller extends EventEmitter {
           const token = tokens.find(t => t.twitterHandle?.toLowerCase() === handle)
           if (!token) continue
 
-          db.updateTwitterFollowers(token.mint, item.followers_count)
+          await db.updateTwitterFollowers(token.mint, item.followers_count)
 
           // Check for a spike: compare against previous reading
           const prev = token.twitterFollowers
@@ -192,7 +192,7 @@ export class DexScreenerPoller extends EventEmitter {
         let updated = 0
         for (const [mint, info] of Object.entries(data)) {
           if (!info?.price || info.price === 0) continue
-          db.updateTokenMetadata(mint, { priceUsd: String(info.price) })
+          await db.updateTokenMetadata(mint, { priceUsd: String(info.price) })
           found.add(mint)
           updated++
         }
@@ -229,7 +229,7 @@ export class DexScreenerPoller extends EventEmitter {
         const price = d.usd_market_cap / PUMPFUN_TOTAL_SUPPLY
         const twitterHandle = d.twitter ? extractTwitterHandle(d.twitter) : undefined
 
-        db.updateTokenMetadata(mint, {
+        await db.updateTokenMetadata(mint, {
           ...(d.name ? { name: d.name } : {}),
           ...(d.symbol ? { symbol: d.symbol } : {}),
           priceUsd: String(price),

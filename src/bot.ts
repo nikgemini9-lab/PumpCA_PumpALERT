@@ -26,7 +26,7 @@ import { syncWebhook } from './heliusWebhook'
 export function setupBot(
   bot: TelegramBot,
   monitor: SolanaMonitor,
-  getStatus: () => MonitorStatus
+  getStatus: () => Promise<MonitorStatus>
 ): void {
 
   /** Any configured user (Nik or Josh) is authorized */
@@ -126,7 +126,7 @@ export function setupBot(
       return
     }
 
-    const added = db.addToken(mint)
+    const added = await db.addToken(mint)
     if (!added) {
       await reply(msg, `ℹ️ Already tracking <code>${mint}</code>`)
       return
@@ -159,7 +159,7 @@ export function setupBot(
       return
     }
 
-    const removed = db.removeToken(mint)
+    const removed = await db.removeToken(mint)
     if (!removed) {
       await reply(msg, `ℹ️ Token not found in your list: <code>${mint}</code>`)
       return
@@ -174,7 +174,7 @@ export function setupBot(
   bot.onText(/\/list/, async msg => {
     if (!isAuthorized(msg.chat.id)) return
 
-    const tokens = db.getAllTokens()
+    const tokens = await db.getAllTokens()
     if (tokens.length === 0) {
       await reply(msg, `📭 No tokens tracked yet.\nUse <code>/add &lt;CA&gt;</code> to start.`)
       return
@@ -188,7 +188,7 @@ export function setupBot(
     for (const t of active) {
       const price = t.priceUsd ? `$${t.priceUsd}` : 'no price yet'
       const mc = t.marketCap ? `MC $${fmtNum(t.marketCap)}` : ''
-      const alertCount = db.getAlertCount(t.mint)
+      const alertCount = await db.getAlertCount(t.mint)
       const srcTag = t.source === 'wallet' ? ` 💼` : ''
       lines.push(
         `🟢 <b>${escHtml(t.symbol)}</b> — ${escHtml(t.name)}${srcTag}`,
@@ -212,7 +212,7 @@ export function setupBot(
   bot.onText(/\/wallets$/, async msg => {
     if (!isAuthorized(msg.chat.id)) return
 
-    const wallets = db.getWallets()
+    const wallets = await db.getWallets()
     if (wallets.length === 0) {
       await reply(
         msg,
@@ -223,7 +223,7 @@ export function setupBot(
 
     const lines: string[] = [`<b>Tracked Wallets (${wallets.length})</b>`, ``]
     for (const w of wallets) {
-      const holdings = db.getWalletHoldings(w.address)
+      const holdings = await db.getWalletHoldings(w.address)
       lines.push(
         `👤 <b>${escHtml(w.label)}</b>  (${holdings.length} holdings)`,
         `   <code>${w.address}</code>`,
@@ -262,7 +262,7 @@ export function setupBot(
       return
     }
 
-    const added = db.addWallet(address, ownerLabel, owner.chatId)
+    const added = await db.addWallet(address, ownerLabel, owner.chatId)
     if (!added) {
       await reply(msg, `ℹ️ Wallet already tracked: <code>${address}</code>`)
       return
@@ -292,7 +292,7 @@ export function setupBot(
       return
     }
 
-    const removed = db.removeWallet(address)
+    const removed = await db.removeWallet(address)
     if (!removed) {
       await reply(msg, `ℹ️ Wallet not found: <code>${address}</code>`)
       return
@@ -308,13 +308,13 @@ export function setupBot(
   bot.onText(/\/status/, async msg => {
     if (!isAuthorized(msg.chat.id)) return
 
-    const s = getStatus()
+    const s = await getStatus()
     const uptime = formatDuration(s.uptime)
     const lastPoll = s.lastPollAt
       ? `${Math.round((Date.now() - s.lastPollAt) / 1000)}s ago`
       : 'never'
 
-    const walletCount = db.getWallets().length
+    const walletCount = (await db.getWallets()).length
 
     await reply(
       msg,

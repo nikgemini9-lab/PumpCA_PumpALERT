@@ -35,10 +35,10 @@ export async function syncWebhook(): Promise<void> {
     return
   }
 
-  const wallets = db.getWallets()
+  const wallets = await db.getWallets()
   const addresses = wallets.map(w => w.address)
   const webhookUrl = `${appUrl}/api/webhook/helius`
-  const existingId = db.getKV(WEBHOOK_ID_KEY)
+  const existingId = await db.getKV(WEBHOOK_ID_KEY)
 
   try {
     if (existingId) {
@@ -46,7 +46,7 @@ export async function syncWebhook(): Promise<void> {
       console.log(`[Webhook] Updated webhook (${existingId.slice(0, 8)}...) — ${addresses.length} wallet(s) monitored`)
     } else {
       const id = await createWebhook(apiKey, webhookUrl, addresses)
-      db.setKV(WEBHOOK_ID_KEY, id)
+      await db.setKV(WEBHOOK_ID_KEY, id)
       console.log(`[Webhook] Created webhook (${id.slice(0, 8)}...) — ${addresses.length} wallet(s) monitored`)
     }
   } catch (err: any) {
@@ -56,10 +56,10 @@ export async function syncWebhook(): Promise<void> {
     if (status === 404 && existingId) {
       // Stale webhook ID — create a fresh one
       console.warn('[Webhook] Stored webhook not found on Helius, recreating...')
-      db.deleteKV(WEBHOOK_ID_KEY)
+      await db.deleteKV(WEBHOOK_ID_KEY)
       try {
         const id = await createWebhook(apiKey, webhookUrl, addresses)
-        db.setKV(WEBHOOK_ID_KEY, id)
+        await db.setKV(WEBHOOK_ID_KEY, id)
         console.log(`[Webhook] Re-created webhook (${id.slice(0, 8)}...)`)
       } catch (err2: any) {
         console.error('[Webhook] Failed to recreate:', err2?.response?.data ?? err2?.message)
