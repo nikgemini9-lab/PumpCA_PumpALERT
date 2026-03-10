@@ -160,3 +160,71 @@ export function fmtAge(ageHours: number): string {
   if (hrs === 0) return `${days}d`
   return `${days}d ${hrs}h`
 }
+
+// ── OG Buy Activity ────────────────────────────────────────────────────────────
+
+export interface OgBuyActivity {
+  buyCount: number
+  buyVolumeSol: number
+  buyVolumeUsd: number
+}
+
+// SOL price cache — refreshed at most once every 5 minutes
+const SOL_MINT = 'So11111111111111111111111111111111111111112'
+let _cachedSolPrice = 150  // safe fallback
+let _solPriceFetchedAt = 0
+
+async function getSolPrice(): Promise<number> {
+  if (Date.now() - _solPriceFetchedAt < 5 * 60_000) return _cachedSolPrice
+  try {
+    const res = await fetch(
+      `https://api.jup.ag/price/v2?ids=${SOL_MINT}`,
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5_000) }
+    )
+    if (res.ok) {
+      const data = (await res.json()) as any
+      const price = parseFloat(String(data?.data?.[SOL_MINT]?.price ?? '0'))
+      if (price > 0) {
+        _cachedSolPrice = price
+        _solPriceFetchedAt = Date.now()
+      }
+    }
+  } catch { /* use cached fallback */ }
+  return _cachedSolPrice
+}
+
+/**
+ * Fetch the last 3 hours of buy activity for an OG token from pump.fun.
+ * Returns buy count + volume in SOL and USD.
+ */
+export async function getOgBuyActivity(mint: string): Promise<OgBuyActivity> {
+  const empty: OgBuyActivity = { buyCount: 0, buyVolumeSol: 0, buyVolumeUsd: 0 }
+  try {
+    const threeHoursAgo = Math.floor((Date.now() - 3 * 60 * 60 * 1000) / 1000)
+    const url = `${PUMP_API}/${mint}/trades?offset=0&limit=200`
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return empty
+
+    const trades = (await res.json()) as Array<{
+      is_buy: boolean
+      sol_amount: number
+      timestamp: number
+    }>
+    if (!Array.isArray(trades)) return empty
+
+    const recentBuys = trades.filter(t => t.is_buy && t.timestamp >= threeHoursAgo)
+    const buyVolumeSol = recentBuys.reduce((sum, t) => sum + (Number(t.sol_amount) || 0), 0)
+    const solPrice = await getSolPrice()
+
+    return {
+      buyCount: recentBuys.length,
+      buyVolumeSol,
+      buyVolumeUsd: buyVolumeSol * solPrice,
+    }
+  } catch {
+    return empty
+  }
+}

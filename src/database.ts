@@ -60,17 +60,19 @@ export async function initDatabase(): Promise<void> {
       value TEXT NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS og_radar (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      migrated_mint   TEXT NOT NULL UNIQUE,
-      migrated_name   TEXT NOT NULL,
-      migrated_symbol TEXT NOT NULL,
-      migrated_mc     REAL NOT NULL,
-      og_mint         TEXT NOT NULL,
-      og_name         TEXT NOT NULL,
-      og_symbol       TEXT NOT NULL,
-      og_mc           REAL NOT NULL,
-      og_age_hours    INTEGER NOT NULL,
-      detected_at     INTEGER NOT NULL
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      migrated_mint       TEXT NOT NULL UNIQUE,
+      migrated_name       TEXT NOT NULL,
+      migrated_symbol     TEXT NOT NULL,
+      migrated_mc         REAL NOT NULL,
+      og_mint             TEXT NOT NULL,
+      og_name             TEXT NOT NULL,
+      og_symbol           TEXT NOT NULL,
+      og_mc               REAL NOT NULL,
+      og_age_hours        INTEGER NOT NULL,
+      og_buy_count        INTEGER NOT NULL DEFAULT 0,
+      og_buy_volume_usd   REAL NOT NULL DEFAULT 0,
+      detected_at         INTEGER NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS idx_alerts_mint_sent ON alerts(mint, sent_at)`,
     `CREATE INDEX IF NOT EXISTS idx_tokens_active ON tokens(active)`,
@@ -89,6 +91,8 @@ export async function initDatabase(): Promise<void> {
   await migrateColumn('tokens', 'twitter_followers', 'INTEGER')
   await migrateColumn('tokens', 'twitter_followers_prev', 'INTEGER')
   await migrateColumn('tokens', 'initial_market_cap', 'REAL')
+  await migrateColumn('og_radar', 'og_buy_count', 'INTEGER NOT NULL DEFAULT 0')
+  await migrateColumn('og_radar', 'og_buy_volume_usd', 'REAL NOT NULL DEFAULT 0')
 }
 
 async function migrateColumn(table: string, column: string, type: string): Promise<void> {
@@ -416,16 +420,20 @@ export async function addOgRadarHit(hit: {
   ogSymbol: string
   ogMc: number
   ogAgeHours: number
+  ogBuyCount: number
+  ogBuyVolumeUsd: number
 }): Promise<boolean> {
   try {
     await client.execute({
       sql: `INSERT INTO og_radar
               (migrated_mint, migrated_name, migrated_symbol, migrated_mc,
-               og_mint, og_name, og_symbol, og_mc, og_age_hours, detected_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               og_mint, og_name, og_symbol, og_mc, og_age_hours,
+               og_buy_count, og_buy_volume_usd, detected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         hit.migratedMint, hit.migratedName, hit.migratedSymbol, hit.migratedMc,
-        hit.ogMint, hit.ogName, hit.ogSymbol, hit.ogMc, hit.ogAgeHours, Date.now(),
+        hit.ogMint, hit.ogName, hit.ogSymbol, hit.ogMc, hit.ogAgeHours,
+        hit.ogBuyCount, hit.ogBuyVolumeUsd, Date.now(),
       ],
     })
     return true
@@ -451,6 +459,8 @@ export async function getOgRadarHits(limit = 50): Promise<OgRadarHit[]> {
     ogSymbol: r.og_symbol as string,
     ogMc: Number(r.og_mc),
     ogAgeHours: Number(r.og_age_hours),
+    ogBuyCount: Number(r.og_buy_count ?? 0),
+    ogBuyVolumeUsd: Number(r.og_buy_volume_usd ?? 0),
     detectedAt: Number(r.detected_at),
   }))
 }

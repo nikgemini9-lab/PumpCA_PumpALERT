@@ -35,6 +35,14 @@ async function main(): Promise<void> {
 
   // 2. Telegram bot
   const bot = new TelegramBot(config.telegram.botToken, { polling: true })
+  // 409 = another instance still shutting down during redeploy — suppress the noise
+  bot.on('polling_error', (err: any) => {
+    if (err?.code === 'ETELEGRAM' && String(err?.message).includes('409')) {
+      console.warn('[Bot] Polling conflict (409) — previous instance still stopping, will recover')
+      return
+    }
+    console.error('[Bot] Polling error:', err?.message ?? err)
+  })
   console.log('[Bot] Telegram bot started (polling)')
 
   // 3. Solana monitor

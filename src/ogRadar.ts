@@ -16,7 +16,7 @@
 import TelegramBot from 'node-telegram-bot-api'
 import { config } from './config'
 import * as db from './database'
-import { findOgToken, fmtAge } from './ogFinder'
+import { findOgToken, fmtAge, getOgBuyActivity } from './ogFinder'
 import { DexScreenerPair } from './types'
 
 const MIGRATED_MC_THRESHOLD = 25_000  // $25K — token must have migrated & pumped
@@ -49,6 +49,9 @@ export class OgHunterRadar {
     if (!og) return
     if (og.marketCapUsd > OG_MC_THRESHOLD) return
 
+    // Fetch buy activity for the OG token (last 3 hours)
+    const buyActivity = await getOgBuyActivity(og.mint)
+
     // Store in DB — returns false if already stored (unique on migrated_mint)
     const stored = await db.addOgRadarHit({
       migratedMint: mint,
@@ -60,15 +63,18 @@ export class OgHunterRadar {
       ogSymbol: og.symbol,
       ogMc: og.marketCapUsd,
       ogAgeHours: og.ageHours,
+      ogBuyCount: buyActivity.buyCount,
+      ogBuyVolumeUsd: buyActivity.buyVolumeUsd,
     })
     if (!stored) return
 
     console.log(
       `[OgRadar] 🎯 Hit! ${name} (${mint.slice(0, 8)}) migrated $${fmtNum(mc)} ` +
-      `→ OG ${og.name} (${og.mint.slice(0, 8)}) MC $${fmtNum(og.marketCapUsd)}`
+      `→ OG ${og.name} (${og.mint.slice(0, 8)}) MC $${fmtNum(og.marketCapUsd)}` +
+      (buyActivity.buyCount > 0 ? ` | OG buys 3h: ${buyActivity.buyCount} ($${fmtNum(buyActivity.buyVolumeUsd)})` : '')
     )
 
-    await this.sendAlert(mint, name, symbol, mc, og)
+    await this.sendAlert(mint, name, symbol, mc, og, buyActivity)
   }
 
   private async sendAlert(
@@ -76,13 +82,18 @@ export class OgHunterRadar {
     name: string,
     symbol: string,
     migratedMc: number,
-    og: { mint: string; name: string; symbol: string; ageHours: number; marketCapUsd: number }
+    og: { mint: string; name: string; symbol: string; ageHours: number; marketCapUsd: number },
+    buyActivity: { buyCount: number; buyVolumeUsd: number }
   ): Promise<void> {
     const chatIds = config.telegram.users.map(u => u.chatId).filter(Boolean)
     if (chatIds.length === 0) return
 
     const ogMcStr = og.marketCapUsd > 0 ? `$${fmtNum(og.marketCapUsd)}` : 'unknown MC'
     const migratedMcStr = `$${fmtNum(migratedMc)}`
+
+    const buyLine = buyActivity.buyCount > 0
+      ? `🛒 OG recent buys (3h): <b>${buyActivity.buyCount}</b>  ·  <b>$${fmtNum(buyActivity.buyVolumeUsd)}</b>`
+      : `🛒 OG recent buys (3h): <b>none yet</b>`
 
     const text = [
       `🎯 <b>OG HUNTER RADAR</b>`,
@@ -99,6 +110,7 @@ export class OgHunterRadar {
       `<code>${og.mint}</code>`,
       `⏳ Age: <b>${fmtAge(og.ageHours)}</b>`,
       `💎 MC: <b>${ogMcStr}</b>  ← still cheap`,
+      buyLine,
       ``,
       `⚡ Community attention may rotate from the new token to this OG.`,
       ``,

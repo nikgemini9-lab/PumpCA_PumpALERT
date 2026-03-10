@@ -133,5 +133,7 @@ export interface OgRadarHit {
   ogSymbol: string
   ogMc: number
   ogAgeHours: number
+  ogBuyCount: number
+  ogBuyVolumeUsd: number
   detectedAt: number
 }

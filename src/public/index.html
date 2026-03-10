@@ -156,8 +156,8 @@
 
     /* ── MAIN GRID ───────────────────────────────────────────── */
     main {
-      padding: 20px 24px;
-      max-width: 1400px;
+      padding: 20px 24px 24px;
+      max-width: 1600px;
       margin: 0 auto;
     }
 
@@ -405,6 +405,17 @@
     .tag-wallet { background: #7c5cfc22; color: #a78bfa; border: 1px solid #7c5cfc44; }
     .tag-manual { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
 
+    /* ── BOTTOM ROW: alerts (left) + radar (right) ────────────── */
+    .bottom-row {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 1000px) {
+      .bottom-row { grid-template-columns: 1fr; }
+    }
+
     /* ── ALERTS SECTION ──────────────────────────────────────── */
     .alerts-panel {
       background: var(--bg2);
@@ -513,7 +524,6 @@
       border: 1px solid #3d2a00;
       border-radius: var(--radius);
       overflow: hidden;
-      margin: 0 24px 24px;
     }
 
     .og-radar-panel .panel-header {
@@ -702,32 +712,36 @@
 
     </div>
 
-    <!-- ── ALERTS PANEL ───────────────────────────────────── -->
-    <div class="alerts-panel">
-      <div class="panel-header">
-        <span class="panel-title">Recent Alerts</span>
-        <span class="badge" id="alerts-badge">0</span>
+    <!-- ── BOTTOM ROW ─────────────────────────────────────── -->
+    <div class="bottom-row">
+
+      <!-- ── ALERTS PANEL ─────────────────────────── -->
+      <div class="alerts-panel">
+        <div class="panel-header">
+          <span class="panel-title">Recent Alerts</span>
+          <span class="badge" id="alerts-badge">0</span>
+        </div>
+        <div id="alerts-list">
+          <div class="empty" style="padding:20px">No alerts fired yet</div>
+        </div>
       </div>
-      <div id="alerts-list">
-        <div class="empty" style="padding:20px">No alerts fired yet</div>
+
+      <!-- ── OG HUNTER RADAR PANEL ─────────────────── -->
+      <div class="og-radar-panel">
+        <div class="panel-header">
+          <span class="panel-title">🎯 OG Hunter Radar</span>
+          <span class="badge" id="og-radar-badge">0</span>
+        </div>
+        <div id="og-radar-list">
+          <div class="empty" style="padding:20px">
+            No hits yet — watching for migrated tokens with a sleeping OG...
+          </div>
+        </div>
       </div>
-    </div>
+
+    </div><!-- /bottom-row -->
 
   </main>
-
-  <!-- ── OG HUNTER RADAR PANEL ──────────────────────────────── -->
-  <div class="og-radar-panel">
-    <div class="panel-header">
-      <span class="panel-title">🎯 OG Hunter Radar</span>
-      <span class="badge" id="og-radar-badge">0</span>
-    </div>
-    <div id="og-radar-list">
-      <div class="empty" style="padding:20px">
-        No hits yet — watching for migrated tokens with a sleeping OG...
-      </div>
-    </div>
-  </div>
-
 </div>
 
 <div id="toast"></div>
@@ -742,6 +756,8 @@
   let selectedWalletAddr = null
   let lastSync = null
   let refreshTimer = null
+  let _prevAlertCount = -1
+  let _prevRadarCount = -1
 
   // ── AUTH ─────────────────────────────────────────────────────────
   function doLogin() {
@@ -1039,6 +1055,9 @@
     const el = document.getElementById('alerts-list')
     document.getElementById('alerts-badge').textContent = alerts.length
 
+    if (_prevAlertCount >= 0 && alerts.length > _prevAlertCount) playAlertSound(false)
+    _prevAlertCount = alerts.length
+
     if (alerts.length === 0) {
       el.innerHTML = '<div class="empty" style="padding:20px">No alerts fired yet</div>'
       return
@@ -1060,11 +1079,22 @@
   function renderOgRadar() {
     const el = document.getElementById('og-radar-list')
     document.getElementById('og-radar-badge').textContent = ogRadarHits.length
+
+    if (_prevRadarCount >= 0 && ogRadarHits.length > _prevRadarCount) playAlertSound(true)
+    _prevRadarCount = ogRadarHits.length
+
     if (ogRadarHits.length === 0) {
       el.innerHTML = '<div class="empty" style="padding:20px">No hits yet — watching for migrated tokens with a sleeping OG...</div>'
       return
     }
-    el.innerHTML = ogRadarHits.map(h => `
+    el.innerHTML = ogRadarHits.map(h => {
+      const buyBadge = h.ogBuyCount > 0
+        ? `<div style="margin-top:4px;font-size:11px;color:var(--green);font-weight:600">
+             🛒 Recent buys (3h): <b>${h.ogBuyCount}</b>
+             ${h.ogBuyVolumeUsd > 0 ? `· <b>$${fmtNum(h.ogBuyVolumeUsd)}</b>` : ''}
+           </div>`
+        : `<div style="margin-top:4px;font-size:11px;color:var(--text-muted)">🛒 No buys in 3h yet</div>`
+      return `
       <div class="og-radar-hit">
         <div class="og-radar-token">
           <div class="og-radar-label migrated">⬆ Migrated (pumping)</div>
@@ -1086,7 +1116,8 @@
           <div class="og-radar-label og">👑 OG Token (sleeping)</div>
           <div class="og-radar-name">${esc(h.ogName)} <span style="color:var(--text-dim);font-weight:400">$${esc(h.ogSymbol)}</span></div>
           <div class="og-radar-mc og">MC ${fmtNum(h.ogMc)} · ${fmtAge(h.ogAgeHours)} old</div>
-          <div class="og-radar-links">
+          ${buyBadge}
+          <div class="og-radar-links" style="margin-top:6px">
             <a href="https://axiom.trade/t/${h.ogMint}" target="_blank">Axiom</a>
             <a href="https://dexscreener.com/solana/${h.ogMint}" target="_blank">DexScr</a>
             <a href="https://pump.fun/${h.ogMint}" target="_blank">pump.fun</a>
@@ -1094,8 +1125,8 @@
           <div class="og-radar-time" onclick="copyMint(this,'${h.ogMint}')" title="Click to copy" style="cursor:pointer">${h.ogMint}</div>
           <div class="og-radar-time">Detected ${timeAgo(h.detectedAt)}</div>
         </div>
-      </div>
-    `).join('')
+      </div>`
+    }).join('')
   }
 
   function fmtAge(hours) {
@@ -1194,6 +1225,29 @@
     el.textContent = msg
     el.className = 'show' + (isError ? ' error' : '')
     setTimeout(() => { el.className = '' }, 3000)
+  }
+
+  // ── ALERT SOUND ─────────────────────────────────────────────────────
+  function playAlertSound(isRadar = false) {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      const gain = ctx.createGain()
+      gain.connect(ctx.destination)
+      gain.gain.setValueAtTime(0, ctx.currentTime)
+
+      const freqs = isRadar ? [660, 880, 1100] : [660, 880]
+      freqs.forEach((freq, i) => {
+        const osc = ctx.createOscillator()
+        osc.connect(gain)
+        osc.type = 'sine'
+        osc.frequency.value = freq
+        const t = ctx.currentTime + i * 0.12
+        gain.gain.setValueAtTime(0.25, t)
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18)
+        osc.start(t)
+        osc.stop(t + 0.2)
+      })
+    } catch { /* AudioContext blocked until user gesture — silent fail */ }
   }
 
   // ── INIT ────────────────────────────────────────────────────────────

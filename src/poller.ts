@@ -18,8 +18,8 @@ import { config } from './config'
 import * as db from './database'
 
 const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/tokens'
-// Jupiter v6 price API — free, no key, covers all Solana tokens with any liquidity
-const JUPITER_PRICE_API = 'https://price.jup.ag/v6/price'
+// Jupiter v2 price API — new domain (price.jup.ag was deprecated and DNS dropped)
+const JUPITER_PRICE_API = 'https://api.jup.ag/price/v2'
 // Pump.fun frontend API — covers pre-graduation bonding curve tokens, no key needed
 const PUMPFUN_API = 'https://frontend-api.pump.fun/coins'
 const PUMPFUN_TOTAL_SUPPLY = 1_000_000_000 // all pump.fun tokens launch with 1B supply
@@ -183,16 +183,17 @@ export class DexScreenerPoller extends EventEmitter {
     const batches = chunk(mints, 100)
     for (const batch of batches) {
       try {
-        // v6 response: { data: { MINT: { id, mintSymbol, vsToken, vsTokenSymbol, price } } }
-        const res = await axios.get<{ data: Record<string, { id: string; price: number }> }>(
+        // v2 response: { data: { MINT: { id, type, price: "string" } } }
+        const res = await axios.get<{ data: Record<string, { id: string; price: string | number }> }>(
           `${JUPITER_PRICE_API}?ids=${batch.join(',')}`,
           { timeout: 8_000, headers: { 'User-Agent': 'PumpAlert/1.0' } }
         )
         const data = res.data?.data ?? {}
         let updated = 0
         for (const [mint, info] of Object.entries(data)) {
-          if (!info?.price || info.price === 0) continue
-          await db.updateTokenMetadata(mint, { priceUsd: String(info.price) })
+          const price = parseFloat(String(info?.price ?? '0'))
+          if (!price || price === 0) continue
+          await db.updateTokenMetadata(mint, { priceUsd: String(price) })
           found.add(mint)
           updated++
         }
@@ -238,8 +239,9 @@ export class DexScreenerPoller extends EventEmitter {
         })
         updated++
       } catch (err: any) {
-        // 404 = not a pump.fun token, skip silently
-        if (err?.response?.status !== 404) {
+        const status = err?.response?.status
+        // 404 = not a pump.fun token; 5xx = Cloudflare/server transient — all silent
+        if (status !== 404 && !(status >= 500)) {
           console.warn(`[Poller] pump.fun fetch error for ${mint}: ${err?.message ?? err}`)
         }
       }
