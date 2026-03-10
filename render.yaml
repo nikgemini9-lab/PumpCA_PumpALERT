@@ -8,7 +8,9 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install && npm run build
+    # npm ci is faster than npm install on Render (uses package-lock.json exactly)
+    # --prefer-offline uses the npm cache layer; SKIP_PREFLIGHT_CHECK avoids CRA checks
+    buildCommand: npm ci && npm run build
     startCommand: node dist/index.js
     healthCheckPath: /health
     envVars:
