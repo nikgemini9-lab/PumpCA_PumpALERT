@@ -34,13 +34,11 @@ export class WalletPoller {
 
   constructor(monitor: SolanaMonitor) {
     this.monitor = monitor
-    // Use Ankr's free public Solana RPC for holdings scans — no key, no credits.
-    // Helius RPC is reserved for WebSocket price monitoring only.
-    // Ankr is more reliable than mainnet-beta.solana.com from server IPs.
-    const holdingsRpc = config.solana.heliusApiKey
-      ? 'https://rpc.ankr.com/solana'
-      : config.solana.rpcUrl
-    this.connection = new Connection(holdingsRpc, { commitment: 'confirmed' })
+    // Use Helius RPC — public endpoints (mainnet-beta, Ankr) silently fail for
+    // getParsedTokenAccountsByOwner from server IPs like Render.
+    // Standard RPC calls cost 1 credit each on Helius — negligible (~8,640/month
+    // for 2 wallets at 10-min intervals vs 1,000,000 free credits/month).
+    this.connection = new Connection(config.solana.rpcUrl, { commitment: 'confirmed' })
   }
 
   start(): void {
