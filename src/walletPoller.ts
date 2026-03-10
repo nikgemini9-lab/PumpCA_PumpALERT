@@ -21,7 +21,8 @@ import { config } from './config'
 import * as db from './database'
 import { SolanaMonitor } from './monitor'
 
-const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
+const TOKEN_PROGRAM_ID      = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
 
 // When Helius webhooks are active: 60-min safety-net poll (webhooks handle real-time)
 // When no Helius key: 5-min polling interval
@@ -49,7 +50,7 @@ export class WalletPoller {
     const usingWebhooks = !!config.solana.heliusApiKey
 
     if (usingWebhooks) {
-      console.log('[WalletPoller] Helius webhooks active — initial scan + 60-min safety net (free public RPC)')
+      console.log('[WalletPoller] Helius webhooks active — initial scan + 60-min safety net')
     } else {
       console.log('[WalletPoller] No Helius key — polling every 5 minutes')
     }
@@ -86,14 +87,17 @@ export class WalletPoller {
   }
 
   private async pollWallet(address: string, label: string): Promise<void> {
-    console.log(`[WalletPoller] Fetching holdings for ${label} (${address.slice(0, 8)}...) via public RPC`)
+    const owner = new PublicKey(address)
+    console.log(`[WalletPoller] Fetching holdings for ${label} (${address.slice(0, 8)}...) via Helius RPC`)
 
-    const { value: accounts } = await this.connection.getParsedTokenAccountsByOwner(
-      new PublicKey(address),
-      { programId: TOKEN_PROGRAM_ID }
-    )
+    // Fetch both classic SPL and Token-2022 accounts in parallel
+    const [splResult, t22Result] = await Promise.all([
+      this.connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID }),
+      this.connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID }),
+    ])
 
-    console.log(`[WalletPoller] RPC returned ${accounts.length} token accounts for ${label}`)
+    const accounts = [...splResult.value, ...t22Result.value]
+    console.log(`[WalletPoller] RPC returned ${splResult.value.length} SPL + ${t22Result.value.length} Token-2022 accounts for ${label}`)
 
     const holdings: Array<{ mint: string; amount: number }> = []
 
@@ -101,8 +105,6 @@ export class WalletPoller {
       const parsed = acct.account.data.parsed?.info
       if (!parsed) continue
       const mint = parsed.mint as string
-      // Use raw amount string — uiAmount can be null for some token decimal configs
-      // even when the user genuinely holds the token
       const rawAmount = parsed.tokenAmount?.amount as string | undefined
       const uiAmount = parsed.tokenAmount?.uiAmount as number | null
       if (rawAmount && rawAmount !== '0') {
