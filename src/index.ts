@@ -55,6 +55,10 @@ async function main(): Promise<void> {
     alertManager.handleDexScreenerData(mint, pair)
   })
 
+  poller.on('social', (mint: string, handle: string, followers: number, delta: number, deltaPct: number) => {
+    alertManager.handleFollowerSpike(mint, handle, followers, delta, deltaPct)
+  })
+
   // Status helper
   const startedAt = Date.now()
   const getStatus = (): MonitorStatus => ({

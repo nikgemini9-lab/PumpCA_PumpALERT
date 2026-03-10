@@ -8,6 +8,9 @@ export interface Token {
   active: boolean
   source?: 'manual' | 'wallet'
   walletSource?: string | null
+  twitterHandle?: string | null
+  twitterFollowers?: number | null
+  twitterFollowersPrev?: number | null
 }
 
 export interface User {
@@ -76,6 +79,11 @@ export interface DexScreenerPair {
   }
   fdv?: number
   marketCap?: number
+  info?: {
+    imageUrl?: string
+    websites?: Array<{ label: string; url: string }>
+    socials?: Array<{ type: string; url: string }>
+  }
 }
 
 export interface AlertData {
@@ -88,7 +96,11 @@ export interface AlertData {
   volumeUsd?: number
   marketCapUsd?: number
   priceUsd?: string
-  source: 'onchain' | 'dexscreener'
+  twitterHandle?: string
+  followersDelta?: number
+  followersDeltaPct?: number
+  followersTotal?: number
+  source: 'onchain' | 'dexscreener' | 'social'
 }
 
 export interface MonitorStatus {

@@ -20,6 +20,10 @@ export class AlertManager {
   private bot: TelegramBot
   // Rolling buy history per mint: timestamps of on-chain buy events
   private buyWindow: Map<string, number[]> = new Map()
+  // Price at the time each alert last fired — used for re-alert gating
+  private priceAtLastAlert: Map<string, number> = new Map()
+  // Hard minimum gap between any two alerts for the same token (anti-burst)
+  private readonly MIN_ALERT_GAP_MS = 2 * 60_000
 
   constructor(bot: TelegramBot) {
     this.bot = bot
@@ -62,11 +66,12 @@ export class AlertManager {
   handleDexScreenerData(mint: string, pair: DexScreenerPair): void {
     const priceChangePct = pair.priceChange?.m5 ?? 0
     const buysM5 = pair.txns?.m5?.buys ?? 0
+    const currentPrice = pair.priceUsd ? parseFloat(pair.priceUsd) : undefined
 
     const exceedsBuyThreshold = buysM5 >= config.alerts.buyCountThreshold
     const exceedsPriceThreshold = priceChangePct >= config.alerts.priceChangePercent
 
-    if ((exceedsBuyThreshold || exceedsPriceThreshold) && !this.isOnCooldown(mint)) {
+    if ((exceedsBuyThreshold || exceedsPriceThreshold) && !this.isOnCooldown(mint, currentPrice)) {
       this.sendAlert({
         mint,
         name: pair.baseToken.name,
@@ -81,9 +86,32 @@ export class AlertManager {
     }
   }
 
+  // ── Social follower spike (from SocialPoller) ─────────────────────────────
+
+  handleFollowerSpike(mint: string, handle: string, followers: number, deltaAbs: number, deltaPct: number): void {
+    const token = db.getToken(mint)
+    this.sendAlert({
+      mint,
+      name: token?.name ?? 'Unknown',
+      symbol: token?.symbol ?? '?',
+      priceUsd: token?.priceUsd ?? undefined,
+      marketCapUsd: token?.marketCap ?? undefined,
+      twitterHandle: handle,
+      followersDelta: deltaAbs,
+      followersDeltaPct: deltaPct,
+      followersTotal: followers,
+      source: 'social',
+    })
+  }
+
   // ── Core send ─────────────────────────────────────────────────────────────
 
   private sendAlert(data: AlertData): void {
+    // Anchor the price so the next re-alert requires another full % move from here
+    if (data.priceUsd) {
+      this.priceAtLastAlert.set(data.mint, parseFloat(data.priceUsd))
+    }
+
     const targets = this.resolveTargets(data.mint)
 
     if (targets.length === 0) {
@@ -134,10 +162,37 @@ export class AlertManager {
     return allChatIds
   }
 
-  private isOnCooldown(mint: string): boolean {
+  /**
+   * Returns true if this mint should be suppressed right now.
+   *
+   * Logic:
+   *  1. Hard minimum gap (2 min) — prevents burst spam.
+   *  2. After the minimum gap, only suppress if the price hasn't moved
+   *     another `priceChangePercent`% from the price when the last alert fired.
+   *     This means a token that keeps pumping will keep alerting, while a
+   *     token that spiked once and flatlined won't spam.
+   *  3. If no price is available, fall back to the configured cooldown.
+   */
+  private isOnCooldown(mint: string, currentPrice?: number): boolean {
     const lastAlert = db.getLastAlertTime(mint)
     if (!lastAlert) return false
-    return Date.now() - lastAlert < config.alerts.cooldownMinutes * 60_000
+
+    const timeSince = Date.now() - lastAlert
+    if (timeSince < this.MIN_ALERT_GAP_MS) return true
+
+    // Price-anchor check: has price moved enough from the last alert?
+    if (currentPrice && this.priceAtLastAlert.has(mint)) {
+      const anchor = this.priceAtLastAlert.get(mint)!
+      if (anchor > 0) {
+        const movePct = Math.abs((currentPrice - anchor) / anchor) * 100
+        // Not moved enough from the anchor — suppress
+        if (movePct < config.alerts.priceChangePercent) return true
+      }
+      return false // price has moved enough — allow re-alert
+    }
+
+    // No price info — fall back to configured cooldown
+    return timeSince < config.alerts.cooldownMinutes * 60_000
   }
 
   // Send a plain info message (used by bot commands, errors, etc.)
@@ -154,6 +209,32 @@ function formatMessage(
   alertConfig: typeof config.alerts,
   holderNames: string[]
 ): string {
+  // Social spike alert — different format
+  if (data.source === 'social' && data.twitterHandle) {
+    const lines = [
+      `👥 <b>COMMUNITY SPIKE!</b>`,
+      ``,
+      `<b>${escapeHtml(data.name)}</b>  $${escapeHtml(data.symbol)}`,
+      `<code>${data.mint}</code>`,
+      ``,
+      `🐦 @${escapeHtml(data.twitterHandle)}`,
+      `📈 Followers  <b>+${data.followersDelta?.toLocaleString()} (+${data.followersDeltaPct?.toFixed(1)}%)</b>`,
+      `👥 Total  <b>${data.followersTotal?.toLocaleString()}</b>`,
+    ]
+    if (data.priceUsd) lines.push(`💲 Price  <b>$${data.priceUsd}</b>`)
+    if (data.marketCapUsd) lines.push(`💎 MC     <b>$${fmtNum(data.marketCapUsd)}</b>`)
+    if (holderNames.length > 0) lines.push(`💼 Held by  <b>${holderNames.join(', ')}</b>`)
+    lines.push(
+      ``,
+      [
+        `<a href="https://x.com/${data.twitterHandle}">🐦 X / Twitter</a>`,
+        `<a href="https://axiom.trade/t/${data.mint}">📊 Axiom</a>`,
+        `<a href="https://dexscreener.com/solana/${data.mint}">📈 DexScr</a>`,
+      ].join('  |  ')
+    )
+    return lines.join('\n')
+  }
+
   const lines: string[] = [
     `🚀 <b>PUMP ALERT!</b>`,
     ``,

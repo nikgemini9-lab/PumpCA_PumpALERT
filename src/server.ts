@@ -139,6 +139,9 @@ export function startServer(
         source: t.source,
         wallet_source: t.walletSource,
         alert_count: db.getAlertCount(t.mint),
+        twitter_handle: t.twitterHandle ?? null,
+        twitter_followers: t.twitterFollowers ?? null,
+        twitter_followers_prev: t.twitterFollowersPrev ?? null,
       }))
     )
   })

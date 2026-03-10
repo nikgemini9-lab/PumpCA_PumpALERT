@@ -818,15 +818,24 @@
       el.innerHTML = '<div class="empty">No tokens tracked yet</div>'
       return
     }
-    el.innerHTML = watchlist.map(t => `
+    el.innerHTML = watchlist.map(t => {
+      const delta = (t.twitter_followers && t.twitter_followers_prev)
+        ? t.twitter_followers - t.twitter_followers_prev : 0
+      const followerStr = t.twitter_followers
+        ? fmtFollowers(t.twitter_followers) + (delta > 0 ? ` <span style="color:var(--green)">+${fmtFollowers(delta)}</span>` : '')
+        : ''
+      const twitterBadge = t.twitter_handle
+        ? `<a href="https://x.com/${esc(t.twitter_handle)}" target="_blank"
+             style="color:var(--text-dim);font-size:10px;text-decoration:none;margin-left:4px"
+             title="@${esc(t.twitter_handle)} on X" onclick="event.stopPropagation()">🐦${followerStr ? ' ' + followerStr : ''}</a>`
+        : ''
+      return `
       <div class="token-row">
         <div class="token-icon">${esc((t.symbol || '?').slice(0,3))}</div>
         <div class="token-info">
           <div class="token-name">
             ${esc(t.name)}
-            <span class="tag ${t.source === 'wallet' ? 'tag-wallet' : 'tag-manual'}">
-              ${t.source === 'wallet' ? '💼' : '✋'}
-            </span>
+            <span class="tag ${t.source === 'wallet' ? 'tag-wallet' : 'tag-manual'}">${t.source === 'wallet' ? '💼' : '✋'}</span>${twitterBadge}
           </div>
           <div class="token-mint" onclick="copyMint(this,'${t.mint}')" title="Click to copy">${t.mint}</div>
         </div>
@@ -835,8 +844,8 @@
           <div class="mc">${t.market_cap ? 'MC ' + fmtNum(t.market_cap) : '–'}</div>
         </div>
         <button class="btn-remove" onclick="removeToken('${t.mint}')">✕</button>
-      </div>
-    `).join('')
+      </div>`
+    }).join('')
   }
 
   async function addToken() {
@@ -932,6 +941,12 @@
     if (n >= 0.01) return n.toFixed(6)
     // Use toPrecision for very tiny values to show 4 significant figures
     return n.toPrecision(4)
+  }
+
+  function fmtFollowers(n) {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
+    return String(n)
   }
 
   function copyMint(el, mint) {

@@ -63,6 +63,9 @@ export function initDatabase(): void {
   // Migrate existing tokens table (adds columns if missing from older deployments)
   migrateColumn('tokens', 'source', "TEXT NOT NULL DEFAULT 'manual'")
   migrateColumn('tokens', 'wallet_source', 'TEXT')
+  migrateColumn('tokens', 'twitter_handle', 'TEXT')
+  migrateColumn('tokens', 'twitter_followers', 'INTEGER')
+  migrateColumn('tokens', 'twitter_followers_prev', 'INTEGER')
 
   console.log(`[DB] Initialized at ${DB_PATH}`)
 }
@@ -120,7 +123,7 @@ export function getAllTokens(): Token[] {
 
 export function updateTokenMetadata(
   mint: string,
-  data: { name?: string; symbol?: string; priceUsd?: string; marketCap?: number }
+  data: { name?: string; symbol?: string; priceUsd?: string; marketCap?: number; twitterHandle?: string }
 ): void {
   const token = getToken(mint)
   if (!token) return
@@ -129,10 +132,29 @@ export function updateTokenMetadata(
   const symbol = data.symbol || token.symbol
   const priceUsd = data.priceUsd ?? token.priceUsd
   const marketCap = data.marketCap ?? token.marketCap
+  const twitterHandle = data.twitterHandle ?? token.twitterHandle ?? null
 
   db.prepare(`
-    UPDATE tokens SET name = ?, symbol = ?, price_usd = ?, market_cap = ? WHERE mint = ?
-  `).run(name, symbol, priceUsd, marketCap, mint)
+    UPDATE tokens SET name = ?, symbol = ?, price_usd = ?, market_cap = ?, twitter_handle = ? WHERE mint = ?
+  `).run(name, symbol, priceUsd, marketCap, twitterHandle, mint)
+}
+
+/** Update follower count — rotates current into prev for delta tracking */
+export function updateTwitterFollowers(mint: string, followers: number): void {
+  db.prepare(`
+    UPDATE tokens
+    SET twitter_followers_prev = twitter_followers,
+        twitter_followers = ?
+    WHERE mint = ?
+  `).run(followers, mint)
+}
+
+/** Return all active tokens that have a twitter handle stored */
+export function getTokensWithTwitter(): Token[] {
+  const rows = db.prepare(
+    `SELECT * FROM tokens WHERE active = 1 AND twitter_handle IS NOT NULL`
+  ).all() as any[]
+  return rows.map(rowToToken)
 }
 
 // ── Alert CRUD ────────────────────────────────────────────────────────────────
@@ -305,6 +327,9 @@ function rowToToken(row: any): Token {
     active: row.active === 1,
     source: row.source ?? 'manual',
     walletSource: row.wallet_source ?? null,
+    twitterHandle: row.twitter_handle ?? null,
+    twitterFollowers: row.twitter_followers ?? null,
+    twitterFollowersPrev: row.twitter_followers_prev ?? null,
   }
 }
 
