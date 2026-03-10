@@ -20,6 +20,9 @@ import * as db from './database'
 const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/tokens'
 // Jupiter v6 price API — free, no key, covers all Solana tokens with any liquidity
 const JUPITER_PRICE_API = 'https://price.jup.ag/v6/price'
+// Pump.fun frontend API — covers pre-graduation bonding curve tokens, no key needed
+const PUMPFUN_API = 'https://frontend-api.pump.fun/coins'
+const PUMPFUN_TOTAL_SUPPLY = 1_000_000_000 // all pump.fun tokens launch with 1B supply
 // Twitter widget endpoint — returns follower counts for public handles, no API key needed
 const TWITTER_WIDGET_API = 'https://cdn.syndication.twimg.com/widgets/followbutton/info.json'
 const BATCH_SIZE = 30
@@ -114,7 +117,12 @@ export class DexScreenerPoller extends EventEmitter {
     // Jupiter fallback: fetch prices for tokens that have no DexScreener pair
     const missingMints = mints.filter(m => !foundOnDex.has(m))
     if (missingMints.length > 0) {
-      await this.fetchJupiterPrices(missingMints)
+      const foundOnJupiter = await this.fetchJupiterPrices(missingMints)
+      // Pump.fun fallback: for tokens still missing after Jupiter (pre-graduation bonding curve)
+      const stillMissing = missingMints.filter(m => !foundOnJupiter.has(m))
+      if (stillMissing.length > 0) {
+        await this.fetchPumpFunPrices(stillMissing)
+      }
     }
   }
 
@@ -168,9 +176,10 @@ export class DexScreenerPoller extends EventEmitter {
   /**
    * Jupiter Price API covers tokens with no DexScreener listing (Token-2022,
    * newly launched, low-liquidity). Free, no API key needed.
+   * Returns the set of mints that Jupiter returned a price for.
    */
-  private async fetchJupiterPrices(mints: string[]): Promise<void> {
-    // Jupiter v6 accepts up to 100 ids per request
+  private async fetchJupiterPrices(mints: string[]): Promise<Set<string>> {
+    const found = new Set<string>()
     const batches = chunk(mints, 100)
     for (const batch of batches) {
       try {
@@ -184,6 +193,7 @@ export class DexScreenerPoller extends EventEmitter {
         for (const [mint, info] of Object.entries(data)) {
           if (!info?.price || info.price === 0) continue
           db.updateTokenMetadata(mint, { priceUsd: String(info.price) })
+          found.add(mint)
           updated++
         }
         if (updated > 0) console.log(`[Poller] Jupiter: prices updated for ${updated} tokens`)
@@ -192,6 +202,49 @@ export class DexScreenerPoller extends EventEmitter {
         console.warn(`[Poller] Jupiter price fallback error: ${err?.message ?? err}`)
       }
     }
+    return found
+  }
+
+  /**
+   * Pump.fun fallback — for tokens still on the bonding curve that have no
+   * DEX pair yet. Calls the pump.fun frontend API per-mint (no batch endpoint).
+   * Also extracts Twitter handle and token name/symbol if not already set.
+   */
+  private async fetchPumpFunPrices(mints: string[]): Promise<void> {
+    let updated = 0
+    await Promise.all(mints.map(async mint => {
+      try {
+        const res = await axios.get<{
+          name?: string
+          symbol?: string
+          usd_market_cap?: number
+          twitter?: string
+        }>(`${PUMPFUN_API}/${mint}`, {
+          timeout: 8_000,
+          headers: { 'User-Agent': 'PumpAlert/1.0' },
+        })
+        const d = res.data
+        if (!d?.usd_market_cap) return
+
+        const price = d.usd_market_cap / PUMPFUN_TOTAL_SUPPLY
+        const twitterHandle = d.twitter ? extractTwitterHandle(d.twitter) : undefined
+
+        db.updateTokenMetadata(mint, {
+          ...(d.name ? { name: d.name } : {}),
+          ...(d.symbol ? { symbol: d.symbol } : {}),
+          priceUsd: String(price),
+          marketCap: d.usd_market_cap,
+          ...(twitterHandle ? { twitterHandle } : {}),
+        })
+        updated++
+      } catch (err: any) {
+        // 404 = not a pump.fun token, skip silently
+        if (err?.response?.status !== 404) {
+          console.warn(`[Poller] pump.fun fetch error for ${mint}: ${err?.message ?? err}`)
+        }
+      }
+    }))
+    if (updated > 0) console.log(`[Poller] pump.fun: prices updated for ${updated} tokens`)
   }
 }
 
