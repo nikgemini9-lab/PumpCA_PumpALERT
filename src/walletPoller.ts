@@ -34,20 +34,18 @@ export class WalletPoller {
 
   constructor(monitor: SolanaMonitor) {
     this.monitor = monitor
-    // Always use public RPC for holdings reads — saves Helius credits
-    const rpc = config.solana.heliusApiKey
-      ? 'https://api.mainnet-beta.solana.com'
-      : config.solana.rpcUrl
-    this.connection = new Connection(rpc, { commitment: 'confirmed' })
+    // Use the configured RPC (Helius if key is set) — the public mainnet RPC
+    // is too aggressively rate-limited from server IPs like Render.
+    this.connection = new Connection(config.solana.rpcUrl, { commitment: 'confirmed' })
   }
 
   start(): void {
     const usingWebhooks = !!config.solana.heliusApiKey
 
     if (usingWebhooks) {
-      console.log('[WalletPoller] Helius webhooks active — initial scan + 10-min safety net (public RPC, no credits)')
+      console.log('[WalletPoller] Helius webhooks active — initial scan + 10-min safety net')
     } else {
-      console.log('[WalletPoller] No Helius key — polling public RPC every 5 minutes')
+      console.log('[WalletPoller] No Helius key — polling every 5 minutes')
     }
 
     // Initial seed after system settles
