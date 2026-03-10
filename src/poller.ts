@@ -18,6 +18,7 @@ import { config } from './config'
 import * as db from './database'
 
 const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/tokens'
+const JUPITER_PRICE_API = 'https://api.jup.ag/price/v2'
 const BATCH_SIZE = 30
 
 export class DexScreenerPoller extends EventEmitter {
@@ -54,6 +55,7 @@ export class DexScreenerPoller extends EventEmitter {
 
     const mints = tokens.map(t => t.mint)
     const batches = chunk(mints, BATCH_SIZE)
+    const foundOnDex = new Set<string>()
 
     for (const batch of batches) {
       try {
@@ -70,6 +72,8 @@ export class DexScreenerPoller extends EventEmitter {
 
           const mint = pair.baseToken?.address
           if (!mint || !mints.includes(mint)) continue
+
+          foundOnDex.add(mint)
 
           // Prefer circulating marketCap over FDV — they're very different for
           // tokens where not all supply is in circulation
@@ -88,6 +92,37 @@ export class DexScreenerPoller extends EventEmitter {
       } catch (err: any) {
         const msg = err?.message ?? String(err)
         console.warn(`[Poller] DexScreener error: ${msg}`)
+      }
+    }
+
+    // Jupiter fallback: fetch prices for tokens that have no DexScreener pair
+    const missingMints = mints.filter(m => !foundOnDex.has(m))
+    if (missingMints.length > 0) {
+      await this.fetchJupiterPrices(missingMints)
+    }
+  }
+
+  /**
+   * Jupiter Price API covers tokens with no DexScreener listing (Token-2022,
+   * newly launched, low-liquidity). Free, no API key needed.
+   */
+  private async fetchJupiterPrices(mints: string[]): Promise<void> {
+    const batches = chunk(mints, 100) // Jupiter supports large batches
+    for (const batch of batches) {
+      try {
+        const res = await axios.get<{ data: Record<string, { id: string; price: string }> }>(
+          `${JUPITER_PRICE_API}?ids=${batch.join(',')}`,
+          { timeout: 8_000, headers: { 'User-Agent': 'PumpAlert/1.0' } }
+        )
+        const data = res.data?.data ?? {}
+        for (const [mint, info] of Object.entries(data)) {
+          if (!info?.price) continue
+          db.updateTokenMetadata(mint, { priceUsd: info.price })
+          console.log(`[Poller] Jupiter price for ${mint.slice(0, 8)}...: $${info.price}`)
+        }
+        this.lastPollAt = Date.now()
+      } catch (err: any) {
+        console.warn(`[Poller] Jupiter price fallback error: ${err?.message ?? err}`)
       }
     }
   }

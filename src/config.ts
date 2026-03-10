@@ -58,7 +58,7 @@ export const config = {
     buyCountThreshold: optionalNumber('BUY_COUNT_ALERT', 5),
     buyCountWindowMinutes: optionalNumber('BUY_COUNT_WINDOW_MINUTES', 5),
     cooldownMinutes: optionalNumber('ALERT_COOLDOWN_MINUTES', 10),
-    pollIntervalSeconds: optionalNumber('POLL_INTERVAL_SECONDS', 30),
+    pollIntervalSeconds: optionalNumber('POLL_INTERVAL_SECONDS', 15),
   },
   dashboard: {
     secret: optional('DASHBOARD_SECRET', ''),

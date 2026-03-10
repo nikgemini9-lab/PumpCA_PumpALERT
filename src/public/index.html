@@ -355,7 +355,13 @@
       font-family: monospace;
       font-size: 10px;
       color: var(--text-dim);
+      cursor: pointer;
+      word-break: break-all;
+      white-space: normal;
+      transition: color 0.15s;
     }
+    .token-mint:hover { color: var(--green); }
+    .token-mint.copied { color: var(--green); }
 
     .token-price {
       text-align: right;
@@ -748,7 +754,7 @@
         <div class="token-icon">${esc((h.symbol || '?').slice(0,3))}</div>
         <div class="token-info">
           <div class="token-name">${esc(h.name || 'Unknown')} <span style="color:var(--text-dim);font-weight:400">$${esc(h.symbol || '?')}</span></div>
-          <div class="token-mint">${h.mint.slice(0,20)}...</div>
+          <div class="token-mint" onclick="copyMint(this,'${h.mint}')" title="Click to copy">${h.mint}</div>
         </div>
         <div class="token-price">
           <div class="price">${h.price_usd ? '$' + fmtPrice(h.price_usd) : '–'}</div>
@@ -822,7 +828,7 @@
               ${t.source === 'wallet' ? '💼' : '✋'}
             </span>
           </div>
-          <div class="token-mint">${t.mint.slice(0,20)}...</div>
+          <div class="token-mint" onclick="copyMint(this,'${t.mint}')" title="Click to copy">${t.mint}</div>
         </div>
         <div class="token-price">
           <div class="price">${t.price_usd ? '$' + fmtPrice(t.price_usd) : '–'}</div>
@@ -887,7 +893,7 @@
         <div class="alert-dot"></div>
         <div class="alert-info">
           <div class="alert-token">${esc(a.name)} <span style="color:var(--text-dim)">$${esc(a.symbol)}</span></div>
-          <div class="alert-type">${esc(a.alertType)} — <span style="font-family:monospace;font-size:10px">${a.mint.slice(0,16)}...</span></div>
+          <div class="alert-type">${esc(a.alertType)} — <span class="token-mint" style="display:inline" onclick="copyMint(this,'${a.mint}')" title="Click to copy">${a.mint}</span></div>
         </div>
         <div class="alert-time">${timeAgo(a.sentAt)}</div>
       </div>
@@ -926,6 +932,14 @@
     if (n >= 0.01) return n.toFixed(6)
     // Use toPrecision for very tiny values to show 4 significant figures
     return n.toPrecision(4)
+  }
+
+  function copyMint(el, mint) {
+    navigator.clipboard.writeText(mint).then(() => {
+      el.classList.add('copied')
+      toast('CA copied!')
+      setTimeout(() => el.classList.remove('copied'), 1500)
+    }).catch(() => toast('Copy failed', true))
   }
 
   function timeAgo(ts) {
