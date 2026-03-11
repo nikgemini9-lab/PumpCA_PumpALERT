@@ -53,13 +53,16 @@ const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
 // ── Internal types ─────────────────────────────────────────────────────────────
 
 interface MintRecord {
-  name:            string
-  symbol:          string
-  firstSeen:       number   // epoch ms — proxy for token creation time
-  lastTradeAt:     number   // epoch ms — most recent observed trade
-  graduated:       boolean
-  metadataFetched: boolean  // true once Helius metadata has been loaded
-  seenCount:       number   // polls in which this mint has appeared
+  name:               string
+  symbol:             string
+  firstSeen:          number   // epoch ms — proxy for token creation time
+  lastTradeAt:        number   // epoch ms — most recent observed trade
+  graduated:          boolean
+  metadataFetched:    boolean  // true once Helius metadata has been loaded
+  seenCount:          number   // polls in which this mint has appeared
+  twitterHandle?:     string   // resolved from DexScreener socials or IPFS metadata
+  communityFollowers?: number  // from Twitter widget API
+  communityCheckedAt?: number  // epoch ms — last widget API check
 }
 
 interface BondingCurveData {
@@ -70,14 +73,15 @@ interface BondingCurveData {
 }
 
 interface DexPairData {
-  name:          string
-  symbol:        string
-  fdv:           number | null
-  pairCreatedAt: number | null   // epoch ms
-  priceChange:   { m5?: number; h1?: number; h6?: number; h24?: number } | null
-  volume:        { h24?: number } | null
-  txns:          { h24?: { buys: number; sells: number } } | null
-  liquidityUsd:  number
+  name:           string
+  symbol:         string
+  fdv:            number | null
+  pairCreatedAt:  number | null   // epoch ms
+  priceChange:    { m5?: number; h1?: number; h6?: number; h24?: number } | null
+  volume:         { h24?: number } | null
+  txns:           { h24?: { buys: number; sells: number } } | null
+  liquidityUsd:   number
+  twitterHandle?: string          // extracted from pair.info.socials
 }
 
 interface Snap { ts: number; mc: number }
@@ -85,21 +89,23 @@ interface Snap { ts: number; mc: number }
 // ── Public types ───────────────────────────────────────────────────────────────
 
 export interface MoverEntry {
-  mint:        string
-  name:        string
-  symbol:      string
-  marketCap:   number
-  ageHours:    number
-  createdAt:   number   // epoch ms
-  lastTradeAt: number   // epoch ms
-  change5m:    number | null
-  change1h:    number | null
-  change6h:    number | null
-  change24h:   number | null
-  volume24h:   number | null
-  txns24h:     number | null
-  graduated:   boolean
-  isDormant:   boolean
+  mint:               string
+  name:               string
+  symbol:             string
+  marketCap:          number
+  ageHours:           number
+  createdAt:          number   // epoch ms
+  lastTradeAt:        number   // epoch ms
+  change5m:           number | null
+  change1h:           number | null
+  change6h:           number | null
+  change24h:          number | null
+  volume24h:          number | null
+  txns24h:            number | null
+  graduated:          boolean
+  isDormant:          boolean
+  twitterHandle?:     string   // X / Twitter handle (without @)
+  communityFollowers?: number  // follower count from widget API
 }
 
 // ── SOL price cache ────────────────────────────────────────────────────────────
@@ -240,6 +246,15 @@ export class MoversPoller extends EventEmitter {
     })
     if (needMeta.length > 0) await this.fetchTokenMetadata(needMeta)
 
+    // 4.5 Propagate twitter handles from DexScreener to mintCache (graduated tokens)
+    for (const [mint, dex] of dexMap) {
+      const rec = this.mintCache.get(mint)
+      if (rec && dex.twitterHandle && !rec.twitterHandle) rec.twitterHandle = dex.twitterHandle
+    }
+
+    // 4.6 Twitter widget API — community follower counts (free, no auth)
+    await this.fetchCommunityFollowers(allMints)
+
     // 5. Build MoverEntry for every mint in cache
     let updated = 0
     for (const mint of allMints) {
@@ -290,6 +305,8 @@ export class MoversPoller extends EventEmitter {
           : null,
         graduated,
         isDormant,
+        twitterHandle:      rec.twitterHandle,
+        communityFollowers: rec.communityFollowers,
       }
 
       // Keep mintCache name/symbol up-to-date
@@ -405,15 +422,18 @@ export class MoversPoller extends EventEmitter {
           const prev = result.get(addr)
           const liq  = pair.liquidity?.usd ?? 0
           if (!prev || liq > prev.liquidityUsd) {
+            const twitterUrl    = pair.info?.socials?.find((s: any) => s.type === 'twitter')?.url
+            const twitterHandle = twitterUrl ? parseTwitterHandle(twitterUrl) : undefined
             result.set(addr, {
-              name:          pair.baseToken.name   ?? '',
-              symbol:        pair.baseToken.symbol ?? '',
-              fdv:           pair.fdv               ?? null,
-              pairCreatedAt: pair.pairCreatedAt     ?? null,
-              priceChange:   pair.priceChange        ?? null,
-              volume:        pair.volume             ?? null,
-              txns:          pair.txns               ?? null,
-              liquidityUsd:  liq,
+              name:           pair.baseToken.name   ?? '',
+              symbol:         pair.baseToken.symbol ?? '',
+              fdv:            pair.fdv               ?? null,
+              pairCreatedAt:  pair.pairCreatedAt     ?? null,
+              priceChange:    pair.priceChange        ?? null,
+              volume:         pair.volume             ?? null,
+              txns:           pair.txns               ?? null,
+              liquidityUsd:   liq,
+              twitterHandle,
             })
           }
         }
@@ -470,16 +490,59 @@ export class MoversPoller extends EventEmitter {
         const rec = this.mintCache.get(item.account)
         if (!rec) continue
 
-        // Helius returns on-chain Metaplex metadata
+        // Helius returns on-chain Metaplex metadata (name/symbol) + off-chain IPFS JSON
         const d = item.onChainMetadata?.metadata?.data ?? item.legacyMetadata
         if (d) {
           rec.name   = (d.name   ?? '').replace(/\0/g, '').trim() || rec.name
           rec.symbol = (d.symbol ?? '').replace(/\0/g, '').trim() || rec.symbol
         }
+        // Off-chain metadata (IPFS JSON) contains twitter/website/telegram set at mint time
+        const offChain = item.offChainMetadata?.metadata
+        if (offChain?.twitter && !rec.twitterHandle) {
+          rec.twitterHandle = parseTwitterHandle(offChain.twitter) ?? undefined
+        }
         rec.metadataFetched = true  // don't re-fetch next poll
       }
     } catch (err: any) {
       console.warn('[Movers] Token metadata error:', err?.message)
+    }
+  }
+
+  // ── Step 5: Twitter community followers (widget API, no auth) ──────────────
+
+  private async fetchCommunityFollowers(mints: string[]): Promise<void> {
+    const now = Date.now()
+    const TTL = 2 * 60 * 60_000  // re-check followers every 2 hours
+
+    const toCheck: { mint: string; handle: string }[] = []
+    for (const mint of mints) {
+      const rec = this.mintCache.get(mint)
+      if (!rec?.twitterHandle) continue
+      if (rec.communityCheckedAt && (now - rec.communityCheckedAt) < TTL) continue
+      toCheck.push({ mint, handle: rec.twitterHandle })
+    }
+    if (toCheck.length === 0) return
+
+    const BATCH = 100
+    const WIDGET = 'https://cdn.syndication.twimg.com/widgets/followbutton/info.json'
+
+    for (let i = 0; i < toCheck.length; i += BATCH) {
+      const batch = toCheck.slice(i, i + BATCH)
+      try {
+        const res = await axios.get<Array<{ screen_name: string; followers_count: number }>>(
+          `${WIDGET}?screen_names=${batch.map(x => x.handle).join(',')}`,
+          { timeout: 8_000, headers: { 'User-Agent': 'PumpAlert/1.0' } }
+        )
+        const byHandle = new Map((res.data ?? []).map(r => [r.screen_name?.toLowerCase(), r.followers_count]))
+        for (const { mint, handle } of batch) {
+          const rec = this.mintCache.get(mint)
+          if (!rec) continue
+          rec.communityFollowers = byHandle.get(handle.toLowerCase()) ?? 0
+          rec.communityCheckedAt = now
+        }
+      } catch (err: any) {
+        console.warn('[Movers] Twitter widget error:', err?.message)
+      }
     }
   }
 
@@ -520,4 +583,25 @@ export class MoversPoller extends EventEmitter {
       return dist < Math.abs(best.ts - target) ? s : best
     }, undefined)
   }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Extract a lowercase Twitter/X handle from a URL or bare handle string. */
+function parseTwitterHandle(input: string): string | undefined {
+  if (!input) return undefined
+  try {
+    const u = new URL(input)
+    const parts = u.pathname.split('/').filter(Boolean)
+    const handle = parts[0]?.toLowerCase()
+    // Skip non-handle URL paths (e.g. twitter.com/intent/tweet)
+    if (handle && !['intent', 'share', 'search', 'hashtag', 'i'].includes(handle)) {
+      return handle
+    }
+  } catch {
+    // Not a URL — treat as bare handle (strip leading @)
+    const bare = input.replace(/^@/, '').trim().toLowerCase()
+    if (bare && /^[a-z0-9_]{1,50}$/.test(bare)) return bare
+  }
+  return undefined
 }

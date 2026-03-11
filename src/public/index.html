@@ -1498,9 +1498,15 @@
       const dex  = `https://dexscreener.com/solana/${m.mint}`
       const axiom = `https://axiom.trade/t/${m.mint}`
       const mintShort = m.mint.slice(0, 6) + '…' + m.mint.slice(-4)
+      const twLine = m.twitterHandle
+        ? `<br><a href="https://x.com/${escH(m.twitterHandle)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);font-size:10px;text-decoration:none">🐦 @${escH(m.twitterHandle)}${m.communityFollowers ? ` <span style="color:var(--text-dim)">· ${fmtFollowers(m.communityFollowers)}</span>` : ''}</a>`
+        : ''
+      const twLink = m.twitterHandle
+        ? `<a href="https://x.com/${escH(m.twitterHandle)}" target="_blank" style="color:var(--blue);margin-right:4px" title="@${escH(m.twitterHandle)}">X</a>`
+        : ''
       return `<tr class="mover-row${dormantClass}">
         <td style="color:var(--text-dim)">${i+1}</td>
-        <td><span style="font-weight:600">${escH(m.symbol)}</span>${dormantBadge}${gradBadge}<br><span style="color:var(--text-dim);font-size:11px">${escH(m.name)}</span></td>
+        <td><span style="font-weight:600">${escH(m.symbol)}</span>${dormantBadge}${gradBadge}<br><span style="color:var(--text-dim);font-size:11px">${escH(m.name)}</span>${twLine}</td>
         <td>
           <span class="mover-ca" onclick="copyMoverCA(this,'${m.mint}')" title="${m.mint}">${mintShort}</span>
         </td>
@@ -1513,7 +1519,7 @@
         <td>${fmtPct(m.change6h)}</td>
         <td>${fmtPct(m.change24h)}</td>
         <td>
-          <a href="${axiom}" target="_blank" style="color:var(--cyan);margin-right:4px">AX</a>
+          ${twLink}<a href="${axiom}" target="_blank" style="color:var(--cyan);margin-right:4px">AX</a>
           <a href="${dex}" target="_blank" style="color:var(--text-dim);margin-right:4px">DX</a>
           <a href="${pump}" target="_blank" style="color:var(--text-dim)">PF</a>
         </td>
