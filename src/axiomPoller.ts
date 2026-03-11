@@ -1,36 +1,41 @@
 /**
  * Axiom pair-info poller
  *
- * Polls https://api6.axiom.trade/pair-info for each tracked token to fetch:
- *   - userCount       — live viewer count (people watching this token on Axiom)
- *   - top10Holders    — % supply held by top 10 wallets
- *   - lpBurned        — % LP burned
- *   - dexPaid         — whether the team paid for DexScreener listing
- *   - devFundedSol    — how much SOL the deployer wallet was funded with
+ * Polls https://api6.axiom.trade/pair-info for:
+ *   A) Watchlist tokens (every AXIOM_POLL_INTERVAL_SECONDS, default 30s)
+ *      → persists to DB, enriches pump alert messages
+ *   B) All active movers (every 60s, top 100 by MC)
+ *      → in-memory only, shown as 👀 column in dashboard movers table
  *
- * Requires AXIOM_COOKIE env var (copy from browser DevTools → Network → any
- * api6.axiom.trade request → Request Headers → Cookie).
- *
- * The pairAddress for pump.fun tokens = bonding curve PDA (derived from mint).
- * For graduated tokens the request may 404 — silently skipped.
+ * Requires AXIOM_COOKIE env var.
+ * Tracks consecutive 401/403 errors — exposes isCookieOk() so the dashboard
+ * can show "👀 N/A" across all mover rows when the session needs rotating.
  *
  * Emits:
  *   'viewers' (mint: string, userCount: number)  — when count >= VIEWER_COUNT_ALERT
- *                                                   and own cooldown has passed
  */
 
 import EventEmitter from 'events'
-import axios from 'axios'
+import axios, { AxiosError } from 'axios'
 import { config } from './config'
 import * as db from './database'
 import { getBondingCurveAddress } from './pump'
 import { AxiomPairInfo } from './types'
+import type { MoverEntry } from './movers'
+
+// Watchlist polling: delay between each token request
+const REQUEST_DELAY_MS = 250
+
+// Movers polling constants
+const MOVER_POLL_INTERVAL_MS = 60_000  // separate 60s cycle
+const MOVER_REQUEST_DELAY_MS = 500     // more conservative for larger batches
+const MAX_MOVERS_TO_POLL = 100         // cap to avoid runaway requests
 
 // Standalone viewer-alert cooldown: 5 minutes per token
 const VIEWER_ALERT_COOLDOWN_MS = 5 * 60_000
 
-// Delay between individual token requests (ms) to avoid hammering the API
-const REQUEST_DELAY_MS = 250
+// Number of consecutive 401/403 responses before marking cookie as dead
+const AUTH_FAIL_THRESHOLD = 3
 
 export interface AxiomTokenCache {
   userCount: number
@@ -43,33 +48,72 @@ export interface AxiomTokenCache {
 
 export class AxiomPoller extends EventEmitter {
   private timer: NodeJS.Timeout | null = null
+  private moversTimer: NodeJS.Timeout | null = null
   private viewerAlertCooldown: Map<string, number> = new Map()
 
-  /** In-memory cache — read by AlertManager to enrich pump alert messages */
+  // Cookie health tracking
+  private cookieOk = true
+  private consecutiveAuthFails = 0
+
+  // Movers viewer count source (set externally after construction)
+  private getMoversSource: (() => MoverEntry[]) | null = null
+
+  /** Watchlist cache — read by AlertManager to enrich pump alert messages */
   readonly cache: Map<string, AxiomTokenCache> = new Map()
+
+  /** Movers viewer counts — in-memory only, ephemeral */
+  private moversViewerCounts: Map<string, number> = new Map()
+
+  // ── Public API ────────────────────────────────────────────────────────────
+
+  /** Wire up the movers source. Call this after both pollers are created. */
+  setMoversSource(fn: () => MoverEntry[]): void {
+    this.getMoversSource = fn
+  }
+
+  /** Latest watchlist token cache entry (null if not yet fetched) */
+  getCached(mint: string): AxiomTokenCache | null {
+    return this.cache.get(mint) ?? null
+  }
+
+  /** Viewer count for a mover from the last movers poll cycle */
+  getMoverViewerCount(mint: string): number | null {
+    return this.moversViewerCounts.get(mint) ?? null
+  }
+
+  /** True while the cookie appears valid; false after 3+ consecutive 401/403s */
+  isCookieOk(): boolean {
+    return this.cookieOk
+  }
 
   start(): void {
     if (!config.axiom.cookie) {
       console.log('[Axiom] No AXIOM_COOKIE set — viewer count polling disabled')
       return
     }
+
     const intervalMs = config.axiom.pollIntervalSeconds * 1_000
-    console.log(`[Axiom] Poller started (every ${config.axiom.pollIntervalSeconds}s, viewer alert ≥ ${config.axiom.viewerCountAlert})`)
-    // Run immediately, then on interval
+    console.log(`[Axiom] Watchlist poller started (every ${config.axiom.pollIntervalSeconds}s, viewer alert ≥ ${config.axiom.viewerCountAlert})`)
+
+    // Watchlist cycle — run immediately then on interval
     this.poll().catch(err => console.error('[Axiom] Initial poll error:', err))
-    this.timer = setInterval(() => this.poll().catch(err => console.error('[Axiom] Poll error:', err)), intervalMs)
+    this.timer = setInterval(
+      () => this.poll().catch(err => console.error('[Axiom] Poll error:', err)),
+      intervalMs
+    )
+
+    // Movers cycle — delay first run by 15s to let MoversPoller warm up
+    setTimeout(() => this.pollMovers().catch(err => console.error('[Axiom] Initial movers poll error:', err)), 15_000)
+    this.moversTimer = setInterval(
+      () => this.pollMovers().catch(err => console.error('[Axiom] Movers poll error:', err)),
+      MOVER_POLL_INTERVAL_MS
+    )
+    console.log('[Axiom] Movers viewer poller started (every 60s, cap 100 movers)')
   }
 
   stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer)
-      this.timer = null
-    }
-  }
-
-  /** Latest cached data for a mint (null if not yet fetched or not a tracked token) */
-  getCached(mint: string): AxiomTokenCache | null {
-    return this.cache.get(mint) ?? null
+    if (this.timer) { clearInterval(this.timer); this.timer = null }
+    if (this.moversTimer) { clearInterval(this.moversTimer); this.moversTimer = null }
   }
 
   /**
@@ -85,6 +129,8 @@ export class AxiomPoller extends EventEmitter {
       return null
     }
   }
+
+  // ── Watchlist poll cycle ──────────────────────────────────────────────────
 
   private async poll(): Promise<void> {
     const tokens = await db.getActiveTokens()
@@ -105,7 +151,7 @@ export class AxiomPoller extends EventEmitter {
         }
         this.cache.set(token.mint, cached)
 
-        // Persist to DB so dashboard always has fresh data
+        // Persist to DB so dashboard watchlist tab always shows fresh data
         await db.updateAxiomData(token.mint, {
           userCount: cached.userCount,
           top10Holders: cached.top10Holders,
@@ -114,8 +160,8 @@ export class AxiomPoller extends EventEmitter {
           devFundedSol: cached.devFundedSol,
         })
 
-        // Emit viewer alert if threshold crossed and cooldown passed
-        if (info.userCount >= config.axiom.viewerCountAlert) {
+        // Emit viewer alert if threshold crossed and own cooldown has passed
+        if (config.axiom.viewerCountAlert > 0 && info.userCount >= config.axiom.viewerCountAlert) {
           const lastAlert = this.viewerAlertCooldown.get(token.mint) ?? 0
           if (Date.now() - lastAlert >= VIEWER_ALERT_COOLDOWN_MS) {
             this.viewerAlertCooldown.set(token.mint, Date.now())
@@ -126,40 +172,94 @@ export class AxiomPoller extends EventEmitter {
         // Silently skip — token may be graduated / not on Axiom
       }
 
-      // Small delay between requests
       await sleep(REQUEST_DELAY_MS)
     }
   }
+
+  // ── Movers poll cycle ─────────────────────────────────────────────────────
+
+  private async pollMovers(): Promise<void> {
+    if (!this.getMoversSource) return
+    const movers = this.getMoversSource()
+    if (movers.length === 0) return
+
+    // Sort by market cap descending, take top MAX_MOVERS_TO_POLL
+    const sorted = [...movers]
+      .sort((a, b) => b.marketCap - a.marketCap)
+      .slice(0, MAX_MOVERS_TO_POLL)
+
+    let fetched = 0
+    for (const mover of sorted) {
+      try {
+        const info = await this.fetchPairInfo(mover.mint)
+        if (info) {
+          this.moversViewerCounts.set(mover.mint, info.userCount)
+          fetched++
+        }
+      } catch {
+        // Skip individual failures silently
+      }
+      await sleep(MOVER_REQUEST_DELAY_MS)
+    }
+
+    console.log(`[Axiom] Movers viewer counts refreshed: ${fetched}/${sorted.length}`)
+  }
+
+  // ── Core fetch ────────────────────────────────────────────────────────────
 
   private async fetchPairInfo(mint: string): Promise<AxiomPairInfo | null> {
     const pairAddress = getBondingCurveAddress(mint).toString()
     const url = `https://api6.axiom.trade/pair-info?pairAddress=${pairAddress}&v=${Date.now()}`
 
-    const res = await axios.get<Record<string, any>>(url, {
-      headers: {
-        Cookie: config.axiom.cookie,
-        'User-Agent': 'Mozilla/5.0 (compatible; PumpAlert/1.0)',
-        Accept: 'application/json',
-      },
-      timeout: 8_000,
-      validateStatus: s => s === 200,
-    })
+    try {
+      const res = await axios.get<Record<string, any>>(url, {
+        headers: {
+          Cookie: config.axiom.cookie,
+          'User-Agent': 'Mozilla/5.0 (compatible; PumpAlert/1.0)',
+          Accept: 'application/json',
+        },
+        timeout: 8_000,
+        validateStatus: s => s === 200,
+      })
 
-    const d = res.data
-    if (!d || typeof d !== 'object') return null
+      // Successful request — reset auth failure counter
+      this.consecutiveAuthFails = 0
+      this.cookieOk = true
 
-    return {
-      userCount: Number(d.userCount ?? 0),
-      top10Holders: Number(d.top10Holders ?? 0),
-      lpBurned: Number(d.lpBurned ?? 0),
-      dexPaid: Boolean(d.dexPaid),
-      devWalletFunding: d.devWalletFunding
-        ? { amountSol: Number(d.devWalletFunding.amountSol ?? 0), fundingWalletAddress: String(d.devWalletFunding.fundingWalletAddress ?? '') }
-        : null,
-      tokenName: String(d.tokenName ?? ''),
-      tokenTicker: String(d.tokenTicker ?? ''),
-      tokenAddress: String(d.tokenAddress ?? mint),
-      pairAddress,
+      const d = res.data
+      if (!d || typeof d !== 'object') return null
+
+      return {
+        userCount: Number(d.userCount ?? 0),
+        top10Holders: Number(d.top10Holders ?? 0),
+        lpBurned: Number(d.lpBurned ?? 0),
+        dexPaid: Boolean(d.dexPaid),
+        devWalletFunding: d.devWalletFunding
+          ? {
+              amountSol: Number(d.devWalletFunding.amountSol ?? 0),
+              fundingWalletAddress: String(d.devWalletFunding.fundingWalletAddress ?? ''),
+            }
+          : null,
+        tokenName: String(d.tokenName ?? ''),
+        tokenTicker: String(d.tokenTicker ?? ''),
+        tokenAddress: String(d.tokenAddress ?? mint),
+        pairAddress,
+      }
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status
+      if (status === 401 || status === 403) {
+        this.consecutiveAuthFails++
+        if (this.consecutiveAuthFails >= AUTH_FAIL_THRESHOLD) {
+          if (this.cookieOk) {
+            console.warn(`[Axiom] Cookie appears expired (${this.consecutiveAuthFails} auth failures) — update AXIOM_COOKIE`)
+          }
+          this.cookieOk = false
+        }
+      } else {
+        // Non-auth error (404, timeout, etc.) — don't penalise cookie health
+        this.consecutiveAuthFails = 0
+      }
+      return null
     }
   }
 }

@@ -957,11 +957,12 @@
               <th onclick="sortMovers('change1h')">1H</th>
               <th onclick="sortMovers('change6h')">6H</th>
               <th onclick="sortMovers('change24h')">24H</th>
+              <th onclick="sortMovers('axiom_user_count')" title="Axiom live viewers">👀</th>
               <th>LINKS</th>
             </tr>
           </thead>
           <tbody id="movers-tbody">
-            <tr><td colspan="12" class="movers-loading">Loading movers… (first data in ~60s)</td></tr>
+            <tr><td colspan="13" class="movers-loading">Loading movers… (first data in ~60s)</td></tr>
           </tbody>
         </table>
       </div>
@@ -991,6 +992,7 @@
   let moversTimer = null
   let moversLastPollAt = null
   let moversLastError = null
+  let axiomCookieOk = null   // null = no axiom cookie configured, true/false = health
   let metaData = []
   let metaActiveWindow = '2h'
   let metaTimer = null
@@ -1522,6 +1524,9 @@
       allMovers = Array.isArray(resp) ? resp : (resp.movers ?? [])
       moversLastPollAt = Array.isArray(resp) ? null : (resp.lastPollAt ?? null)
       moversLastError  = Array.isArray(resp) ? null : (resp.lastError  ?? null)
+      if (!Array.isArray(resp) && resp.axiom_cookie_ok !== undefined) {
+        axiomCookieOk = resp.axiom_cookie_ok
+      }
 
       const dormantCount = allMovers.filter(m => m.isDormant).length
       document.getElementById('dormant-count')?.setAttribute('textContent', dormantCount)
@@ -1602,7 +1607,7 @@
       } else {
         msg = 'No movers data — retrying next poll'
       }
-      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:var(--text-dim);padding:24px">${msg}</td></tr>`
+      tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;color:var(--text-dim);padding:24px">${msg}</td></tr>`
       return
     }
 
@@ -1620,6 +1625,11 @@
       const dex  = `https://dexscreener.com/solana/${m.mint}`
       const axiom = `https://axiom.trade/t/${m.mint}`
       const mintShort = m.mint.slice(0, 6) + '…' + m.mint.slice(-4)
+      const viewersHtml = axiomCookieOk === false
+        ? `<span style="color:#ff7043;font-size:11px" title="Axiom cookie expired — update AXIOM_COOKIE">N/A</span>`
+        : m.axiom_user_count != null && m.axiom_user_count > 0
+          ? `<span style="color:#7eb8f7;font-weight:600">${m.axiom_user_count}</span>`
+          : `<span style="color:#444">—</span>`
       const twLine = m.twitterHandle
         ? `<br><a href="https://x.com/${escH(m.twitterHandle)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);font-size:10px;text-decoration:none">🐦 @${escH(m.twitterHandle)}${m.communityFollowers ? ` <span style="color:var(--text-dim)">· ${fmtFollowers(m.communityFollowers)}</span>` : ''}</a>`
         : ''
@@ -1640,6 +1650,7 @@
         <td>${fmtPct(m.change1h)}</td>
         <td>${fmtPct(m.change6h)}</td>
         <td>${fmtPct(m.change24h)}</td>
+        <td style="text-align:center">${viewersHtml}</td>
         <td>
           ${twLink}<a href="${axiom}" target="_blank" style="color:var(--cyan);margin-right:4px">AX</a>
           <a href="${dex}" target="_blank" style="color:var(--text-dim);margin-right:4px">DX</a>

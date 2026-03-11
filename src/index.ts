@@ -112,6 +112,9 @@ async function main(): Promise<void> {
     console.log('[Init] No tokens tracked yet. Use /add <CA> in Telegram or the dashboard.')
   }
 
+  // Wire AxiomPoller movers source (lets it fetch viewer counts for all movers)
+  axiomPoller.setMoversSource(() => moversPoller.getMovers())
+
   // Wire OG radar to movers graduation events
   moversPoller.on('graduated', (mint: string, name: string, symbol: string, mc: number) => {
     ogRadar.handleMoversEntry(mint, name, symbol, mc)
@@ -201,7 +204,7 @@ async function main(): Promise<void> {
   axiomPoller.start()
 
   // Start HTTP server + dashboard
-  startServer(getStatus, monitor, walletPoller, moversPoller)
+  startServer(getStatus, monitor, walletPoller, moversPoller, axiomPoller)
 
   // Register / update Helius webhook (async, non-blocking)
   syncWebhook().catch(err => console.error('[Init] Webhook sync error:', err))

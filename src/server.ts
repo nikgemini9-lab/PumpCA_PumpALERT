@@ -29,12 +29,14 @@ import { SolanaMonitor } from './monitor'
 import { WalletPoller, SKIP_MINTS } from './walletPoller'
 import { syncWebhook, parseWebhookTransfers } from './heliusWebhook'
 import { MoversPoller } from './movers'
+import type { AxiomPoller } from './axiomPoller'
 
 export function startServer(
   getStatus: () => Promise<MonitorStatus>,
   monitor: SolanaMonitor,
   walletPoller: WalletPoller,
-  moversPoller: MoversPoller
+  moversPoller: MoversPoller,
+  axiomPoller: AxiomPoller | null = null
 ): void {
   const app = express()
   app.use(express.json())
@@ -306,7 +308,17 @@ export function startServer(
       return bScore - aScore
     })
 
-    res.json({ movers, lastPollAt: status.lastPollAt, lastError: status.lastError })
+    const cookieOk = axiomPoller ? axiomPoller.isCookieOk() : null
+
+    res.json({
+      movers: movers.map(m => ({
+        ...m,
+        axiom_user_count: axiomPoller?.getMoverViewerCount(m.mint) ?? null,
+      })),
+      axiom_cookie_ok: cookieOk,
+      lastPollAt: status.lastPollAt,
+      lastError: status.lastError,
+    })
   })
 
   // ── GET /api/meta ─────────────────────────────────────────────────────────
