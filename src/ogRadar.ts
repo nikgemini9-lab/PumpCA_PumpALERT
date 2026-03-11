@@ -28,21 +28,31 @@ export class OgHunterRadar {
 
   constructor(private bot: TelegramBot) {}
 
-  /** Called from index.ts on every poller.on('data') event */
+  /** Called from index.ts on every poller.on('data') event (watchlist tokens) */
   handleDexData(mint: string, pair: DexScreenerPair): void {
-    const mc = pair.fdv ?? pair.marketCap
+    this._maybeCheck(
+      mint,
+      pair.baseToken?.name ?? '',
+      pair.baseToken?.symbol ?? '',
+      pair.fdv ?? pair.marketCap ?? 0,
+    )
+  }
+
+  /** Called from index.ts on moversPoller 'graduated' event (all pump.fun tokens) */
+  handleMoversEntry(mint: string, name: string, symbol: string, mc: number): void {
+    this._maybeCheck(mint, name, symbol, mc)
+  }
+
+  private _maybeCheck(mint: string, name: string, symbol: string, mc: number): void {
     if (!mc || mc < MIGRATED_MC_THRESHOLD) return
     if (this.checked.has(mint)) return
     this.checked.add(mint)
-
-    this.runCheck(mint, pair, mc).catch(err =>
+    this.runCheck(mint, name, symbol, mc).catch(err =>
       console.error('[OgRadar] check error:', err)
     )
   }
 
-  private async runCheck(mint: string, pair: DexScreenerPair, mc: number): Promise<void> {
-    const name = pair.baseToken?.name
-    const symbol = pair.baseToken?.symbol
+  private async runCheck(mint: string, name: string, symbol: string, mc: number): Promise<void> {
     if (!name || name === 'Unknown') return
 
     const og = await findOgToken(mint, name, symbol)
@@ -54,8 +64,8 @@ export class OgHunterRadar {
 
     // Store in DB — returns false if already stored (unique on migrated_mint)
     const stored = await db.addOgRadarHit({
-      migratedMint: mint,
-      migratedName: name,
+      migratedMint:   mint,
+      migratedName:   name,
       migratedSymbol: symbol,
       migratedMc: mc,
       ogMint: og.mint,

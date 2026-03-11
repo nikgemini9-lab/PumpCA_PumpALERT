@@ -100,6 +100,11 @@ async function main(): Promise<void> {
     console.log('[Init] No tokens tracked yet. Use /add <CA> in Telegram or the dashboard.')
   }
 
+  // Wire OG radar to movers graduation events
+  moversPoller.on('graduated', (mint: string, name: string, symbol: string, mc: number) => {
+    ogRadar.handleMoversEntry(mint, name, symbol, mc)
+  })
+
   // Wire dormant coin Telegram alerts
   moversPoller.on('dormant', (mover: MoverEntry) => {
     const chatIds = config.telegram.users.map(u => u.chatId).filter(Boolean)

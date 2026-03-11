@@ -952,7 +952,7 @@
     setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 8_000)
     setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 20_000)
     refreshTimer = setInterval(refresh, 15000)
-    moversTimer = setInterval(fetchMovers, 60000)
+    moversTimer = setInterval(fetchMovers, 30_000)
   }
 
   document.getElementById('login-input').addEventListener('keydown', e => {

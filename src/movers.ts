@@ -43,6 +43,7 @@ const DEX_API     = 'https://api.dexscreener.com/latest/dex/tokens'
 const JUPITER_API = 'https://api.jup.ag/price/v2'
 
 const POLL_MS          = 15 * 60_000  // 15 minutes (was 5 — saves ~19k credits/day)
+const ENRICH_MS        =  2 * 60_000  // 2 minutes — refresh MC/price for known mints (free)
 const DORMANT_AGE_DAYS = 25
 const DORMANT_MOVE_1H  = 30           // % threshold
 const DORMANT_MOVE_6H  = 60           // % threshold
@@ -170,8 +171,10 @@ export class MoversPoller extends EventEmitter {
   private mintCache   = new Map<string, MintRecord>()   // mint → record
   private history     = new Map<string, Snap[]>()
   private movers      = new Map<string, MoverEntry>()
-  private dormantSeen = new Set<string>()
-  private timer: NodeJS.Timeout | null = null
+  private dormantSeen        = new Set<string>()
+  private graduationEmitted  = new Set<string>()
+  private discoverTimer: NodeJS.Timeout | null = null
+  private enrichTimer:   NodeJS.Timeout | null = null
   private lastPollAt: number | null = null
   private lastError:  string | null = null
   private _conn:      Connection | null = null  // reuse to avoid GET_SLOT overhead
@@ -185,16 +188,26 @@ export class MoversPoller extends EventEmitter {
   }
 
   start(): void {
-    this.poll().catch(err => console.error('[Movers] poll error:', err?.message))
-    this.timer = setInterval(
-      () => this.poll().catch(err => console.error('[Movers] poll error:', err?.message)),
+    // Kick both loops immediately on startup
+    this.discover().catch(err => console.error('[Movers] discover error:', err?.message))
+    this.enrich().catch(err => console.error('[Movers] enrich error:', err?.message))
+
+    // Discovery: 15 min — Helius Enhanced Txs (100 credits/call, kept slow)
+    this.discoverTimer = setInterval(
+      () => this.discover().catch(err => console.error('[Movers] discover error:', err?.message)),
       POLL_MS
     )
-    console.log('[Movers] Poller started — 15 min interval (Helius)')
+    // Enrichment: 2 min — DexScreener (free) + bonding curve RPC (~1 credit/batch)
+    this.enrichTimer = setInterval(
+      () => this.enrich().catch(err => console.error('[Movers] enrich error:', err?.message)),
+      ENRICH_MS
+    )
+    console.log('[Movers] Poller started — discovery 15 min, enrichment 2 min')
   }
 
   stop(): void {
-    if (this.timer) { clearInterval(this.timer); this.timer = null }
+    if (this.discoverTimer) { clearInterval(this.discoverTimer); this.discoverTimer = null }
+    if (this.enrichTimer)   { clearInterval(this.enrichTimer);   this.enrichTimer   = null }
   }
 
   getMovers(): MoverEntry[] { return Array.from(this.movers.values()) }
@@ -207,18 +220,20 @@ export class MoversPoller extends EventEmitter {
     }
   }
 
-  // ── Core poll ────────────────────────────────────────────────────────────────
+  // ── Discovery (15 min) — find new mints via Helius Enhanced Txs ──────────────
 
-  private async poll(): Promise<void> {
+  private async discover(): Promise<void> {
     if (!this.heliusKey) {
       this.lastError = 'HELIUS_API_KEY not set'
-      console.warn('[Movers] HELIUS_API_KEY not set — skipping poll')
+      console.warn('[Movers] HELIUS_API_KEY not set — skipping discover')
       return
     }
-
-    // 1. Discover recently-traded mints via Helius Enhanced Transactions
     await this.fetchRecentMints()
+  }
 
+  // ── Enrichment (2 min) — refresh MC/price for all known mints ─────────────
+
+  private async enrich(): Promise<void> {
     if (this.mintCache.size === 0) return
 
     const now      = Date.now()
@@ -327,12 +342,21 @@ export class MoversPoller extends EventEmitter {
           `age ${Math.floor(ageDays)}d 1h=${change1h?.toFixed(1)}%`
         )
       }
+
+      // Emit 'graduated' once per mint so OG radar can check it
+      if (entry.graduated && entry.marketCap > 0 &&
+          entry.name && entry.name !== 'Unknown') {
+        if (!this.graduationEmitted.has(mint)) {
+          this.graduationEmitted.add(mint)
+          this.emit('graduated', mint, entry.name, entry.symbol, entry.marketCap)
+        }
+      }
     }
 
     this.lastPollAt = Date.now()
     this.lastError  = null
     console.log(
-      `[Movers] Updated ${updated}/${allMints.length} tokens ` +
+      `[Movers] Enriched ${updated}/${allMints.length} tokens ` +
       `(${dexMap.size} DexScreener, ${curveMap.size} bonding-curve)`
     )
   }
@@ -386,6 +410,7 @@ export class MoversPoller extends EventEmitter {
           this.mintCache.delete(m)
           this.history.delete(m)
           this.movers.delete(m)
+          this.graduationEmitted.delete(m)
         }
       }
 
