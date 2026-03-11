@@ -518,6 +518,75 @@
       color: var(--red);
     }
 
+    /* ── MOVERS SECTION ──────────────────────────────────────── */
+    .movers-section {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-top: 16px;
+    }
+    .movers-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .movers-title-group { display: flex; align-items: center; gap: 10px; }
+    .movers-title { font-size: 14px; font-weight: 700; }
+    .movers-live-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); animation: pulse 2s infinite; flex-shrink: 0;
+    }
+    .movers-tabs { display: flex; gap: 4px; }
+    .mover-tab {
+      background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      color: var(--text-dim); padding: 4px 12px; font-size: 12px; font-weight: 500;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .mover-tab:hover { color: var(--text); border-color: var(--text-dim); }
+    .mover-tab.active { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+    .movers-sort-info { font-size: 11px; color: var(--text-muted); }
+    .movers-table-wrap { overflow-x: auto; }
+    .movers-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .movers-table th {
+      padding: 8px 12px; text-align: left; color: var(--text-dim); font-size: 11px;
+      font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+      border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer; user-select: none;
+    }
+    .movers-table th:hover { color: var(--text); }
+    .movers-table th.sort-active { color: var(--green); }
+    .movers-table td {
+      padding: 8px 12px; border-bottom: 1px solid #1a1a26; white-space: nowrap; vertical-align: middle;
+    }
+    .movers-table tr:last-child td { border-bottom: none; }
+    .movers-table tr.mover-row:hover { background: var(--bg3); }
+    .mover-row.dormant-row { background: #1a1200; }
+    .mover-row.dormant-row:hover { background: #221700; }
+    .mover-rank { color: var(--text-muted); font-weight: 600; min-width: 36px; }
+    .mover-coin-cell { min-width: 140px; }
+    .mover-coin-name { font-weight: 600; display: flex; align-items: center; gap: 4px; }
+    .mover-coin-sym { color: var(--text-dim); font-size: 11px; margin-top: 1px; }
+    .mover-mc { font-weight: 600; }
+    .mover-vol, .mover-txns { color: var(--text-dim); }
+    .mover-age { font-weight: 600; }
+    .mover-age.age-new { color: var(--green); }
+    .mover-age.age-mid { color: var(--yellow); }
+    .mover-age.age-old { color: #ff9f1c; }
+    .pct-pos { color: var(--green); font-weight: 600; }
+    .pct-neg { color: var(--red); font-weight: 600; }
+    .pct-nil { color: var(--text-muted); }
+    .mover-links { display: flex; gap: 3px; }
+    .mover-links a {
+      font-size: 10px; color: var(--text-dim); text-decoration: none;
+      background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 2px 5px;
+    }
+    .mover-links a:hover { color: var(--green); border-color: var(--green); }
+    .movers-empty, .movers-loading { padding: 24px; text-align: center; color: var(--text-muted); }
+
     /* ── OG RADAR PANEL ──────────────────────────────────────── */
     .og-radar-panel {
       background: var(--bg2);
@@ -741,6 +810,45 @@
 
     </div><!-- /bottom-row -->
 
+    <!-- ── MOVERS SECTION ─────────────────────────────────────── -->
+    <div class="movers-section">
+      <div class="movers-header">
+        <div class="movers-title-group">
+          <span class="movers-live-dot"></span>
+          <span class="movers-title">🏄 Pump.fun Movers</span>
+          <span class="badge" id="movers-badge">0</span>
+          <span class="movers-sort-info" id="movers-sort-info">sorted by 1H%</span>
+        </div>
+        <div class="movers-tabs">
+          <button class="mover-tab active" onclick="setMoverFilter('all')">All</button>
+          <button class="mover-tab" onclick="setMoverFilter('dormant')">👴 Dormant <span id="dormant-count">0</span></button>
+          <button class="mover-tab" onclick="setMoverFilter('gainers')">📈 Gainers</button>
+        </div>
+      </div>
+      <div class="movers-table-wrap">
+        <table class="movers-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th onclick="sortMovers('name')">COIN</th>
+              <th onclick="sortMovers('marketCap')">MCAP</th>
+              <th onclick="sortMovers('ageHours')">AGE</th>
+              <th onclick="sortMovers('txns24h')">TXNS</th>
+              <th onclick="sortMovers('volume24h')">24H VOL</th>
+              <th onclick="sortMovers('change5m')" class="sort-active">5M</th>
+              <th onclick="sortMovers('change1h')">1H</th>
+              <th onclick="sortMovers('change6h')">6H</th>
+              <th onclick="sortMovers('change24h')">24H</th>
+              <th>LINKS</th>
+            </tr>
+          </thead>
+          <tbody id="movers-tbody">
+            <tr><td colspan="11" class="movers-loading">Loading movers… (first data in ~60s)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div><!-- /movers-section -->
+
   </main>
 </div>
 
@@ -758,6 +866,11 @@
   let refreshTimer = null
   let _prevAlertCount = -1
   let _prevRadarCount = -1
+  let allMovers = []
+  let moverFilter = 'all'
+  let moverSortKey = 'change1h'
+  let moverSortDir = -1   // -1 = desc, 1 = asc
+  let moversTimer = null
 
   // ── AUTH ─────────────────────────────────────────────────────────
   function doLogin() {
@@ -787,7 +900,9 @@
     document.getElementById('login-screen').style.display = 'none'
     document.getElementById('app').style.display = 'block'
     refresh()
+    fetchMovers()
     refreshTimer = setInterval(refresh, 15000)
+    moversTimer = setInterval(fetchMovers, 60000)
   }
 
   document.getElementById('login-input').addEventListener('keydown', e => {
@@ -1225,6 +1340,117 @@
     el.textContent = msg
     el.className = 'show' + (isError ? ' error' : '')
     setTimeout(() => { el.className = '' }, 3000)
+  }
+
+  // ── MOVERS ──────────────────────────────────────────────────────────
+  async function fetchMovers() {
+    try {
+      allMovers = await apiGet('/api/movers')
+      const dormantCount = allMovers.filter(m => m.isDormant).length
+      const badge = document.getElementById('dormant-count')
+      if (badge) badge.textContent = dormantCount
+      const totalBadge = document.getElementById('movers-badge')
+      if (totalBadge) totalBadge.textContent = allMovers.length
+      renderMovers()
+    } catch(e) {}
+  }
+
+  function setMoverFilter(filter) {
+    moverFilter = filter
+    document.querySelectorAll('.movers-tabs .mover-tab').forEach(t => t.classList.remove('active'))
+    // Re-add active to the clicked tab by filter mapping
+    const tabs = document.querySelectorAll('.movers-tabs .mover-tab')
+    const idx = ['all','dormant','gainers'].indexOf(filter)
+    if (idx >= 0 && tabs[idx]) tabs[idx].classList.add('active')
+    renderMovers()
+  }
+
+  function sortMovers(key) {
+    if (moverSortKey === key) {
+      moverSortDir *= -1
+    } else {
+      moverSortKey = key
+      moverSortDir = -1
+    }
+    document.querySelectorAll('.movers-table th').forEach(th => th.classList.remove('sort-active'))
+    document.querySelectorAll('.movers-table th').forEach(th => {
+      const onclick = th.getAttribute('onclick')
+      if (onclick && onclick.includes(`'${key}'`)) th.classList.add('sort-active')
+    })
+    renderMovers()
+  }
+
+  function renderMovers() {
+    const tbody = document.getElementById('movers-tbody')
+    if (!tbody) return
+
+    let list = [...allMovers]
+
+    if (moverFilter === 'dormant') list = list.filter(m => m.isDormant)
+    else if (moverFilter === 'gainers') list = list.filter(m => (m.change1h ?? 0) > 0)
+
+    list.sort((a, b) => {
+      let av = a[moverSortKey], bv = b[moverSortKey]
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      return (av < bv ? -1 : av > bv ? 1 : 0) * moverSortDir
+    })
+
+    if (list.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-dim);padding:24px">No movers yet — data loads every 60s</td></tr>'
+      return
+    }
+
+    tbody.innerHTML = list.map((m, i) => {
+      const dormantClass = m.isDormant ? ' dormant-row' : ''
+      const dormantBadge = m.isDormant ? ' <span style="font-size:11px">👴</span>' : ''
+      const gradBadge = m.graduated ? ' <span style="color:var(--green);font-size:10px">✓</span>' : ''
+      const ageH = m.ageHours
+      const ageClass = ageH < 7*24 ? 'age-new' : ageH < 25*24 ? 'age-mid' : 'age-old'
+      const ageStr = ageH < 24 ? `${ageH}h` : `${Math.floor(ageH/24)}d`
+      const mcStr = fmtMcMovers(m.marketCap)
+      const vol = m.volume24h != null ? fmtMcMovers(m.volume24h) : '—'
+      const txns = m.txns24h != null ? m.txns24h.toLocaleString() : '—'
+      const pump = `https://pump.fun/${m.mint}`
+      const dex  = `https://dexscreener.com/solana/${m.mint}`
+      const axiom = `https://axiom.trade/t/${m.mint}`
+      return `<tr class="mover-row${dormantClass}">
+        <td style="color:var(--text-dim)">${i+1}</td>
+        <td><span style="font-weight:600">${escH(m.symbol)}</span>${dormantBadge}${gradBadge}<br><span style="color:var(--text-dim);font-size:11px">${escH(m.name)}</span></td>
+        <td>${mcStr}</td>
+        <td class="mover-age ${ageClass}">${ageStr}</td>
+        <td style="font-size:11px">${txns}</td>
+        <td>${vol}</td>
+        <td>${fmtPct(m.change5m)}</td>
+        <td>${fmtPct(m.change1h)}</td>
+        <td>${fmtPct(m.change6h)}</td>
+        <td>${fmtPct(m.change24h)}</td>
+        <td>
+          <a href="${axiom}" target="_blank" style="color:var(--blue);margin-right:4px">AX</a>
+          <a href="${dex}" target="_blank" style="color:var(--text-dim);margin-right:4px">DX</a>
+          <a href="${pump}" target="_blank" style="color:var(--text-dim)">PF</a>
+        </td>
+      </tr>`
+    }).join('')
+  }
+
+  function fmtPct(n) {
+    if (n == null) return '<span style="color:var(--text-muted)">—</span>'
+    const sign = n >= 0 ? '+' : ''
+    const cls = n >= 0 ? 'pct-pos' : 'pct-neg'
+    return `<span class="${cls}">${sign}${n.toFixed(1)}%</span>`
+  }
+
+  function fmtMcMovers(n) {
+    if (!n) return '—'
+    if (n >= 1_000_000) return `$${(n/1_000_000).toFixed(2)}M`
+    if (n >= 1_000) return `$${(n/1_000).toFixed(1)}K`
+    return `$${n.toFixed(0)}`
+  }
+
+  function escH(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
   }
 
   // ── ALERT SOUND ─────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ import { setupBot } from './bot'
 import { startServer } from './server'
 import { syncWebhook } from './heliusWebhook'
 import { OgHunterRadar } from './ogRadar'
+import { MoversPoller, MoverEntry } from './movers'
 import { MonitorStatus } from './types'
 
 async function main(): Promise<void> {
@@ -60,6 +61,9 @@ async function main(): Promise<void> {
   // 7. OG Hunter Radar
   const ogRadar = new OgHunterRadar(bot)
 
+  // 8. Movers poller
+  const moversPoller = new MoversPoller()
+
   // Wire up events
   monitor.on('buy', event => {
     alertManager.handleOnChainBuy(event)
@@ -96,12 +100,55 @@ async function main(): Promise<void> {
     console.log('[Init] No tokens tracked yet. Use /add <CA> in Telegram or the dashboard.')
   }
 
+  // Wire dormant coin Telegram alerts
+  moversPoller.on('dormant', (mover: MoverEntry) => {
+    const chatIds = config.telegram.users.map(u => u.chatId).filter(Boolean)
+    const ageDays = Math.floor(mover.ageHours / 24)
+    const ageStr  = ageDays >= 365 ? `${Math.floor(ageDays / 365)}y ${ageDays % 365}d`
+                  : ageDays >= 30  ? `${Math.floor(ageDays / 30)}mo`
+                  : `${ageDays}d`
+
+    const fmtPct = (n: number | null) => n != null ? `${n > 0 ? '+' : ''}${n.toFixed(1)}%` : '—'
+    const mcStr  = mover.marketCap >= 1e6 ? `$${(mover.marketCap / 1e6).toFixed(2)}M`
+                 : mover.marketCap >= 1e3 ? `$${(mover.marketCap / 1e3).toFixed(1)}K`
+                 : `$${mover.marketCap.toFixed(0)}`
+    const lastTraded = Math.floor((Date.now() - mover.lastTradeAt) / 60_000)
+    const lastStr = lastTraded < 60 ? `${lastTraded}m ago` : `${Math.floor(lastTraded / 60)}h ago`
+
+    const text = [
+      `👴 <b>DORMANT COIN WOKE UP!</b>`,
+      ``,
+      `<b>${mover.name}</b>  $${mover.symbol}`,
+      `<code>${mover.mint}</code>`,
+      ``,
+      `⏳ Age: <b>${ageStr}</b>`,
+      `💎 MC: <b>${mcStr}</b>`,
+      `📈 1H: <b>${fmtPct(mover.change1h)}</b>  |  24H: <b>${fmtPct(mover.change24h)}</b>`,
+      `⏱ Last traded: <b>${lastStr}</b>`,
+      ``,
+      `⚡ Old coin suddenly moving — possible OG situation.`,
+      `Check OG Hunter Radar for related new coins.`,
+      ``,
+      [
+        `<a href="https://axiom.trade/t/${mover.mint}">📊 Axiom</a>`,
+        `<a href="https://dexscreener.com/solana/${mover.mint}">📈 DexScr</a>`,
+        `<a href="https://pump.fun/${mover.mint}">🎱 pump.fun</a>`,
+      ].join('  |  '),
+    ].join('\n')
+
+    for (const chatId of chatIds) {
+      bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+        .catch(err => console.error('[Movers] Telegram error:', err?.message))
+    }
+  })
+
   // Start pollers
   poller.start()
   walletPoller.start()
+  moversPoller.start()
 
   // Start HTTP server + dashboard
-  startServer(getStatus, monitor, walletPoller)
+  startServer(getStatus, monitor, walletPoller, moversPoller)
 
   // Register / update Helius webhook (async, non-blocking)
   syncWebhook().catch(err => console.error('[Init] Webhook sync error:', err))
@@ -145,19 +192,21 @@ async function main(): Promise<void> {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
 
   // Graceful shutdown
-  process.on('SIGTERM', () => gracefulShutdown(monitor, poller, walletPoller, bot))
-  process.on('SIGINT', () => gracefulShutdown(monitor, poller, walletPoller, bot))
+  process.on('SIGTERM', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, bot))
+  process.on('SIGINT', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, bot))
 }
 
 async function gracefulShutdown(
   monitor: SolanaMonitor,
   poller: DexScreenerPoller,
   walletPoller: WalletPoller,
+  moversPoller: MoversPoller,
   bot: TelegramBot
 ): Promise<void> {
   console.log('\n[Shutdown] Stopping services...')
   poller.stop()
   walletPoller.stop()
+  moversPoller.stop()
   await monitor.stop()
   bot.stopPolling()
   console.log('[Shutdown] Done.')

@@ -28,11 +28,13 @@ import { MonitorStatus } from './types'
 import { SolanaMonitor } from './monitor'
 import { WalletPoller, SKIP_MINTS } from './walletPoller'
 import { syncWebhook, parseWebhookTransfers } from './heliusWebhook'
+import { MoversPoller } from './movers'
 
 export function startServer(
   getStatus: () => Promise<MonitorStatus>,
   monitor: SolanaMonitor,
-  walletPoller: WalletPoller
+  walletPoller: WalletPoller,
+  moversPoller: MoversPoller
 ): void {
   const app = express()
   app.use(express.json())
@@ -280,6 +282,24 @@ export function startServer(
   // ── GET /api/og-radar ─────────────────────────────────────────────────────
   app.get('/api/og-radar', async (_req: Request, res: Response) => {
     res.json(await db.getOgRadarHits(50))
+  })
+
+  // ── GET /api/movers ───────────────────────────────────────────────────────
+  app.get('/api/movers', (req: Request, res: Response) => {
+    const filter = req.query.filter as string | undefined
+    let movers = moversPoller.getMovers()
+
+    if (filter === 'dormant') movers = movers.filter(m => m.isDormant)
+    else if (filter === 'gainers') movers = movers.filter(m => (m.change1h ?? 0) > 0)
+
+    // Default sort: biggest absolute 1h move first, then by 24h, then by MC
+    movers.sort((a, b) => {
+      const aScore = Math.abs(a.change1h ?? a.change24h ?? 0)
+      const bScore = Math.abs(b.change1h ?? b.change24h ?? 0)
+      return bScore - aScore
+    })
+
+    res.json(movers)
   })
 
   // ── GET /api/users ────────────────────────────────────────────────────────
