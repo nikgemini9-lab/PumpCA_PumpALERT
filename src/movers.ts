@@ -19,8 +19,9 @@
  * tokens discovered earlier continue to be enriched via DexScreener even after
  * they graduate and stop appearing in bonding-curve transactions.
  *
- * Poll interval: 5 minutes  (100 credits × 288 polls/day ≈ 864 k credits/month
- * — fits comfortably inside the Helius free-tier 1 M credits/month cap).
+ * Poll interval: 15 minutes (100 credits × 96 polls/day ≈ 288 k credits/month).
+ * Metadata is only fetched for mints seen in ≥ 2 poll cycles (seenCount ≥ 2)
+ * to avoid paying 100 credits for flash tokens that never recur.
  *
  * Dormant-coin detection (unchanged logic):
  *   age ≥ 25 days  AND  traded within last 24 h  AND  |1h| ≥ 30% OR |6h| ≥ 60%
@@ -41,7 +42,7 @@ const HELIUS_API  = 'https://api.helius.xyz/v0'
 const DEX_API     = 'https://api.dexscreener.com/latest/dex/tokens'
 const JUPITER_API = 'https://api.jup.ag/price/v2'
 
-const POLL_MS          = 5 * 60_000   // 5 minutes
+const POLL_MS          = 15 * 60_000  // 15 minutes (was 5 — saves ~19k credits/day)
 const DORMANT_AGE_DAYS = 25
 const DORMANT_MOVE_1H  = 30           // % threshold
 const DORMANT_MOVE_6H  = 60           // % threshold
@@ -58,6 +59,7 @@ interface MintRecord {
   lastTradeAt:     number   // epoch ms — most recent observed trade
   graduated:       boolean
   metadataFetched: boolean  // true once Helius metadata has been loaded
+  seenCount:       number   // polls in which this mint has appeared
 }
 
 interface BondingCurveData {
@@ -182,7 +184,7 @@ export class MoversPoller extends EventEmitter {
       () => this.poll().catch(err => console.error('[Movers] poll error:', err?.message)),
       POLL_MS
     )
-    console.log('[Movers] Poller started — 5 min interval (Helius)')
+    console.log('[Movers] Poller started — 15 min interval (Helius)')
   }
 
   stop(): void {
@@ -230,6 +232,7 @@ export class MoversPoller extends EventEmitter {
       const rec = this.mintCache.get(m)
       if (!rec || rec.metadataFetched) return false
       if (rec.name && rec.name !== m.slice(0, 8)) return false  // already have a name
+      if (rec.seenCount < 2) return false  // skip flash tokens seen only once (saves TOKENS_METADATA_V2)
       const curve = curveMap.get(m)
       if (!curve) return false
       const mc = computeMcUsd(curve, solPrice)
@@ -342,6 +345,7 @@ export class MoversPoller extends EventEmitter {
           const existing = this.mintCache.get(mint)
           if (existing) {
             if (txTs > existing.lastTradeAt) existing.lastTradeAt = txTs
+            existing.seenCount++
           } else {
             this.mintCache.set(mint, {
               name:            mint.slice(0, 8),   // placeholder until metadata loaded
@@ -350,6 +354,7 @@ export class MoversPoller extends EventEmitter {
               lastTradeAt:     txTs,
               graduated:       false,
               metadataFetched: false,
+              seenCount:       1,
             })
           }
         }
