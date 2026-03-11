@@ -303,6 +303,11 @@ export function startServer(
     res.json({ movers, lastPollAt: status.lastPollAt, lastError: status.lastError })
   })
 
+  // ── GET /api/meta ─────────────────────────────────────────────────────────
+  app.get('/api/meta', (_req: Request, res: Response) => {
+    res.json(moversPoller.getMetaAnalysis())
+  })
+
   // ── GET /api/users ────────────────────────────────────────────────────────
   app.get('/api/users', (_req: Request, res: Response) => {
     res.json(config.telegram.users.map(u => u.name))
