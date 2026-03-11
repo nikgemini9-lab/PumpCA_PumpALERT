@@ -142,6 +142,12 @@ export function startServer(
       twitter_handle: t.twitterHandle ?? null,
       twitter_followers: t.twitterFollowers ?? null,
       twitter_followers_prev: t.twitterFollowersPrev ?? null,
+      axiom_user_count: t.axiomUserCount ?? null,
+      axiom_top10_holders: t.axiomTop10Holders ?? null,
+      axiom_lp_burned: t.axiomLpBurned ?? null,
+      axiom_dex_paid: t.axiomDexPaid ?? null,
+      axiom_dev_funded_sol: t.axiomDevFundedSol ?? null,
+      axiom_updated_at: t.axiomUpdatedAt ?? null,
       alert_count: await db.getAlertCount(t.mint),
     })))
     res.json(result)

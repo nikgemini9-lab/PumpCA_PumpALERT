@@ -63,6 +63,11 @@ export const config = {
   dashboard: {
     secret: optional('DASHBOARD_SECRET', ''),
   },
+  axiom: {
+    cookie: optional('AXIOM_COOKIE', ''),
+    viewerCountAlert: optionalNumber('VIEWER_COUNT_ALERT', 50),
+    pollIntervalSeconds: optionalNumber('AXIOM_POLL_INTERVAL_SECONDS', 30),
+  },
   appUrl: optional('APP_URL', '').replace(/\/$/, ''), // e.g. https://pumpca-pumpalert.onrender.com
   port: optionalNumber('PORT', 3000),
 }

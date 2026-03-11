@@ -93,6 +93,12 @@ export async function initDatabase(): Promise<void> {
   await migrateColumn('tokens', 'initial_market_cap', 'REAL')
   await migrateColumn('og_radar', 'og_buy_count', 'INTEGER NOT NULL DEFAULT 0')
   await migrateColumn('og_radar', 'og_buy_volume_usd', 'REAL NOT NULL DEFAULT 0')
+  await migrateColumn('tokens', 'axiom_user_count', 'INTEGER')
+  await migrateColumn('tokens', 'axiom_top10_holders', 'REAL')
+  await migrateColumn('tokens', 'axiom_lp_burned', 'REAL')
+  await migrateColumn('tokens', 'axiom_dex_paid', 'INTEGER')
+  await migrateColumn('tokens', 'axiom_dev_funded_sol', 'REAL')
+  await migrateColumn('tokens', 'axiom_updated_at', 'INTEGER')
 }
 
 async function migrateColumn(table: string, column: string, type: string): Promise<void> {
@@ -186,6 +192,31 @@ export async function updateTokenMetadata(
     sql: `UPDATE tokens SET name = ?, symbol = ?, price_usd = ?, market_cap = ?,
           twitter_handle = ?, initial_market_cap = ? WHERE mint = ?`,
     args: [name, symbol, priceUsd ?? null, marketCap ?? null, twitterHandle, initialMarketCap, mint],
+  })
+}
+
+export async function updateAxiomData(
+  mint: string,
+  data: {
+    userCount: number
+    top10Holders: number
+    lpBurned: number
+    dexPaid: boolean
+    devFundedSol: number | null
+  }
+): Promise<void> {
+  await client.execute({
+    sql: `UPDATE tokens SET
+            axiom_user_count = ?, axiom_top10_holders = ?,
+            axiom_lp_burned = ?, axiom_dex_paid = ?,
+            axiom_dev_funded_sol = ?, axiom_updated_at = ?
+          WHERE mint = ?`,
+    args: [
+      data.userCount, data.top10Holders,
+      data.lpBurned, data.dexPaid ? 1 : 0,
+      data.devFundedSol, Date.now(),
+      mint,
+    ],
   })
 }
 
@@ -486,6 +517,12 @@ function rowToToken(row: any): Token {
     twitterHandle: row.twitter_handle != null ? String(row.twitter_handle) : null,
     twitterFollowers: row.twitter_followers != null ? Number(row.twitter_followers) : null,
     twitterFollowersPrev: row.twitter_followers_prev != null ? Number(row.twitter_followers_prev) : null,
+    axiomUserCount: row.axiom_user_count != null ? Number(row.axiom_user_count) : null,
+    axiomTop10Holders: row.axiom_top10_holders != null ? Number(row.axiom_top10_holders) : null,
+    axiomLpBurned: row.axiom_lp_burned != null ? Number(row.axiom_lp_burned) : null,
+    axiomDexPaid: row.axiom_dex_paid != null ? Number(row.axiom_dex_paid) === 1 : null,
+    axiomDevFundedSol: row.axiom_dev_funded_sol != null ? Number(row.axiom_dev_funded_sol) : null,
+    axiomUpdatedAt: row.axiom_updated_at != null ? Number(row.axiom_updated_at) : null,
   }
 }
 

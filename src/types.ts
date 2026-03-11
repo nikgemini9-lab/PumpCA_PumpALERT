@@ -12,6 +12,28 @@ export interface Token {
   twitterHandle?: string | null
   twitterFollowers?: number | null
   twitterFollowersPrev?: number | null
+  // Axiom pair-info data
+  axiomUserCount?: number | null
+  axiomTop10Holders?: number | null
+  axiomLpBurned?: number | null
+  axiomDexPaid?: boolean | null
+  axiomDevFundedSol?: number | null
+  axiomUpdatedAt?: number | null
+}
+
+export interface AxiomPairInfo {
+  userCount: number
+  top10Holders: number
+  lpBurned: number
+  dexPaid: boolean
+  devWalletFunding?: {
+    amountSol: number
+    fundingWalletAddress: string
+  } | null
+  tokenName: string
+  tokenTicker: string
+  tokenAddress: string
+  pairAddress: string
 }
 
 export interface User {
@@ -102,7 +124,13 @@ export interface AlertData {
   followersDelta?: number
   followersDeltaPct?: number
   followersTotal?: number
-  source: 'onchain' | 'dexscreener' | 'social'
+  // Axiom enrichment (optional — only present when AXIOM_COOKIE is set)
+  axiomUserCount?: number
+  axiomTop10Holders?: number
+  axiomLpBurned?: number
+  axiomDexPaid?: boolean
+  axiomDevFundedSol?: number
+  source: 'onchain' | 'dexscreener' | 'social' | 'viewers'
 }
 
 export interface MonitorStatus {

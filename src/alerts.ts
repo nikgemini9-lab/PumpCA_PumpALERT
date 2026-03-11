@@ -15,9 +15,11 @@ import TelegramBot from 'node-telegram-bot-api'
 import { config } from './config'
 import * as db from './database'
 import { OnChainBuyEvent, DexScreenerPair, AlertData } from './types'
+import type { AxiomPoller } from './axiomPoller'
 
 export class AlertManager {
   private bot: TelegramBot
+  private axiomPoller: AxiomPoller | null
   // Rolling buy history per mint: timestamps of on-chain buy events
   private buyWindow: Map<string, number[]> = new Map()
   // Price at the time each alert last fired — used for re-alert gating
@@ -25,8 +27,9 @@ export class AlertManager {
   // Hard minimum gap between any two alerts for the same token (anti-burst)
   private readonly MIN_ALERT_GAP_MS = 2 * 60_000
 
-  constructor(bot: TelegramBot) {
+  constructor(bot: TelegramBot, axiomPoller: AxiomPoller | null = null) {
     this.bot = bot
+    this.axiomPoller = axiomPoller
   }
 
   // ── On-chain buy (from SolanaMonitor) ─────────────────────────────────────
@@ -60,6 +63,7 @@ export class AlertManager {
   ): Promise<void> {
     if (await this.isOnCooldown(mint)) return
     const token = await db.getToken(mint)
+    const axiom = this.axiomPoller?.getCached(mint)
     await this.sendAlert({
       mint,
       name: token?.name ?? 'Unknown',
@@ -70,6 +74,11 @@ export class AlertManager {
       priceUsd: token?.priceUsd ?? undefined,
       marketCapUsd: token?.marketCap ?? undefined,
       initialMarketCapUsd: token?.initialMarketCap ?? undefined,
+      axiomUserCount: axiom?.userCount,
+      axiomTop10Holders: axiom?.top10Holders,
+      axiomLpBurned: axiom?.lpBurned,
+      axiomDexPaid: axiom?.dexPaid,
+      axiomDevFundedSol: axiom?.devFundedSol ?? undefined,
       source: 'onchain',
     })
   }
@@ -110,6 +119,7 @@ export class AlertManager {
       return
     }
 
+    const axiom = this.axiomPoller?.getCached(mint)
     await this.sendAlert({
       mint,
       name: pair.baseToken.name,
@@ -120,7 +130,38 @@ export class AlertManager {
       marketCapUsd: currentMC,
       priceUsd: pair.priceUsd,
       initialMarketCapUsd: initialMC ?? undefined,
+      axiomUserCount: axiom?.userCount,
+      axiomTop10Holders: axiom?.top10Holders,
+      axiomLpBurned: axiom?.lpBurned,
+      axiomDexPaid: axiom?.dexPaid,
+      axiomDevFundedSol: axiom?.devFundedSol ?? undefined,
       source: 'dexscreener',
+    })
+  }
+
+  // ── Axiom viewer count spike ──────────────────────────────────────────────
+
+  handleViewerCount(mint: string, userCount: number): void {
+    this.handleViewerCountAsync(mint, userCount).catch(err =>
+      console.error('[Alert] handleViewerCount error:', err)
+    )
+  }
+
+  private async handleViewerCountAsync(mint: string, userCount: number): Promise<void> {
+    const token = await db.getToken(mint)
+    const axiom = this.axiomPoller?.getCached(mint)
+    await this.sendAlert({
+      mint,
+      name: token?.name ?? 'Unknown',
+      symbol: token?.symbol ?? '?',
+      priceUsd: token?.priceUsd ?? undefined,
+      marketCapUsd: token?.marketCap ?? undefined,
+      axiomUserCount: userCount,
+      axiomTop10Holders: axiom?.top10Holders,
+      axiomLpBurned: axiom?.lpBurned,
+      axiomDexPaid: axiom?.dexPaid,
+      axiomDevFundedSol: axiom?.devFundedSol ?? undefined,
+      source: 'viewers',
     })
   }
 
@@ -168,7 +209,7 @@ export class AlertManager {
       return
     }
 
-    await db.recordAlert(data.mint, 'pump')
+    await db.recordAlert(data.mint, data.source === 'viewers' ? 'viewers' : 'pump')
 
     const holders = await db.getWalletsHoldingToken(data.mint)
     const holderNames = holders.map(w => w.label)
@@ -229,11 +270,58 @@ export class AlertManager {
   }
 }
 
+function formatAxiomLines(data: AlertData): string[] {
+  const lines: string[] = []
+  if (data.axiomUserCount != null && data.axiomUserCount > 0) {
+    lines.push(`👀 Viewers  <b>${data.axiomUserCount} watching</b>`)
+  }
+  if (data.axiomTop10Holders != null && data.axiomTop10Holders > 0) {
+    lines.push(`🏆 Top 10   <b>${data.axiomTop10Holders.toFixed(1)}% held</b>`)
+  }
+  if (data.axiomLpBurned != null && data.axiomLpBurned >= 100) {
+    lines.push(`🔥 LP       <b>100% burned</b>`)
+  } else if (data.axiomLpBurned != null && data.axiomLpBurned > 0) {
+    lines.push(`🔥 LP       <b>${data.axiomLpBurned.toFixed(0)}% burned</b>`)
+  }
+  if (data.axiomDexPaid) {
+    lines.push(`✅ DexPaid  <b>yes</b>`)
+  }
+  if (data.axiomDevFundedSol != null && data.axiomDevFundedSol > 0) {
+    lines.push(`💸 Dev fund <b>${data.axiomDevFundedSol.toFixed(2)} SOL</b>`)
+  }
+  return lines
+}
+
 function formatMessage(
   data: AlertData,
   alertConfig: typeof config.alerts,
   holderNames: string[]
 ): string {
+  // ── Viewer count spike ──────────────────────────────────────────────────
+  if (data.source === 'viewers') {
+    const lines = [
+      `👀 <b>VIEWERS SPIKE!</b>`,
+      ``,
+      `<b>${escapeHtml(data.name)}</b>  $${escapeHtml(data.symbol)}`,
+      `<code>${data.mint}</code>`,
+      ``,
+      `👀 Viewers  <b>${data.axiomUserCount} people watching</b>`,
+      ...formatAxiomLines({ ...data, axiomUserCount: undefined }), // skip duplicate viewers line
+    ]
+    if (data.priceUsd) lines.push(`💲 Price  <b>$${data.priceUsd}</b>`)
+    if (data.marketCapUsd) lines.push(`💎 MC     <b>$${fmtNum(data.marketCapUsd)}</b>`)
+    if (holderNames.length > 0) lines.push(`💼 Held by  <b>${holderNames.join(', ')}</b>`)
+    lines.push(
+      ``,
+      [
+        `<a href="https://axiom.trade/t/${data.mint}">📊 Axiom</a>`,
+        `<a href="https://dexscreener.com/solana/${data.mint}">📈 DexScr</a>`,
+        `<a href="https://pump.fun/${data.mint}">🎱 pump.fun</a>`,
+      ].join('  |  ')
+    )
+    return lines.join('\n')
+  }
+
   if (data.source === 'social' && data.twitterHandle) {
     const lines = [
       `👥 <b>COMMUNITY SPIKE!</b>`,
@@ -295,6 +383,11 @@ function formatMessage(
     const changePct = ((data.marketCapUsd - data.initialMarketCapUsd) / data.initialMarketCapUsd) * 100
     const sign = changePct >= 0 ? '+' : ''
     lines.push(`📍 First seen  <b>$${fmtNum(data.initialMarketCapUsd)}</b> MC  →  <b>${sign}${changePct.toFixed(0)}%</b>`)
+  }
+
+  const axiomLines = formatAxiomLines(data)
+  if (axiomLines.length > 0) {
+    lines.push('', ...axiomLines)
   }
 
   if (holderNames.length > 0) {

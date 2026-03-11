@@ -25,6 +25,7 @@ import { syncWebhook } from './heliusWebhook'
 import { OgHunterRadar } from './ogRadar'
 import { OgMcTracker } from './ogMcTracker'
 import { MoversPoller, MoverEntry } from './movers'
+import { AxiomPoller } from './axiomPoller'
 import { MonitorStatus } from './types'
 
 async function main(): Promise<void> {
@@ -53,19 +54,22 @@ async function main(): Promise<void> {
   // 4. DexScreener poller
   const poller = new DexScreenerPoller()
 
-  // 5. Alert manager
-  const alertManager = new AlertManager(bot)
+  // 5. Axiom viewer count poller (created before AlertManager so it can be injected)
+  const axiomPoller = new AxiomPoller()
 
-  // 6. Wallet holdings poller
+  // 6. Alert manager
+  const alertManager = new AlertManager(bot, axiomPoller)
+
+  // 7. Wallet holdings poller
   const walletPoller = new WalletPoller(monitor)
 
-  // 7. OG Hunter Radar
+  // 8. OG Hunter Radar
   const ogRadar = new OgHunterRadar(bot)
 
-  // 8. OG MC Tracker (milestone alerts: 2x/3x/5x/10x after radar fires)
+  // 9. OG MC Tracker (milestone alerts: 2x/3x/5x/10x after radar fires)
   const ogMcTracker = new OgMcTracker(bot)
 
-  // 9. Movers poller
+  // 10. Movers poller
   const moversPoller = new MoversPoller()
 
   // Wire up events
@@ -80,6 +84,10 @@ async function main(): Promise<void> {
 
   poller.on('social', (mint: string, handle: string, followers: number, delta: number, deltaPct: number) => {
     alertManager.handleFollowerSpike(mint, handle, followers, delta, deltaPct)
+  })
+
+  axiomPoller.on('viewers', (mint: string, userCount: number) => {
+    alertManager.handleViewerCount(mint, userCount)
   })
 
   // Status helper (async — queries DB for live token count)
@@ -124,31 +132,65 @@ async function main(): Promise<void> {
     const lastTraded = Math.floor((Date.now() - mover.lastTradeAt) / 60_000)
     const lastStr = lastTraded < 60 ? `${lastTraded}m ago` : `${Math.floor(lastTraded / 60)}h ago`
 
-    const text = [
-      `👴 <b>DORMANT COIN WOKE UP!</b>`,
-      ``,
-      `<b>${mover.name}</b>  $${mover.symbol}`,
-      `<code>${mover.mint}</code>`,
-      ``,
-      `⏳ Age: <b>${ageStr}</b>`,
-      `💎 MC: <b>${mcStr}</b>`,
-      `📈 1H: <b>${fmtPct(mover.change1h)}</b>  |  24H: <b>${fmtPct(mover.change24h)}</b>`,
-      `⏱ Last traded: <b>${lastStr}</b>`,
-      ``,
-      `⚡ Old coin suddenly moving — possible OG situation.`,
-      `Check OG Hunter Radar for related new coins.`,
-      ``,
-      [
-        `<a href="https://axiom.trade/t/${mover.mint}">📊 Axiom</a>`,
-        `<a href="https://dexscreener.com/solana/${mover.mint}">📈 DexScr</a>`,
-        `<a href="https://pump.fun/${mover.mint}">🎱 pump.fun</a>`,
-      ].join('  |  '),
-    ].join('\n')
+    // Fetch Axiom viewer count for this dormant coin — adds conviction signal
+    axiomPoller.fetchViewerCount(mover.mint).then(viewerCount => {
+      const viewerLine = viewerCount != null && viewerCount > 0
+        ? `\n👀 Axiom:  <b>${viewerCount} watching</b>`
+        : ''
 
-    for (const chatId of chatIds) {
-      bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true })
-        .catch(err => console.error('[Movers] Telegram error:', err?.message))
-    }
+      const text = [
+        `👴 <b>DORMANT COIN WOKE UP!</b>`,
+        ``,
+        `<b>${mover.name}</b>  $${mover.symbol}`,
+        `<code>${mover.mint}</code>`,
+        ``,
+        `⏳ Age: <b>${ageStr}</b>`,
+        `💎 MC: <b>${mcStr}</b>`,
+        `📈 1H: <b>${fmtPct(mover.change1h)}</b>  |  24H: <b>${fmtPct(mover.change24h)}</b>`,
+        `⏱ Last traded: <b>${lastStr}</b>${viewerLine}`,
+        ``,
+        `⚡ Old coin suddenly moving — possible OG situation.`,
+        `Check OG Hunter Radar for related new coins.`,
+        ``,
+        [
+          `<a href="https://axiom.trade/t/${mover.mint}">📊 Axiom</a>`,
+          `<a href="https://dexscreener.com/solana/${mover.mint}">📈 DexScr</a>`,
+          `<a href="https://pump.fun/${mover.mint}">🎱 pump.fun</a>`,
+        ].join('  |  '),
+      ].join('\n')
+
+      for (const chatId of chatIds) {
+        bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+          .catch(err => console.error('[Movers] Telegram error:', err?.message))
+      }
+    }).catch(() => {
+      // Axiom fetch failed — send alert without viewer count
+      const text = [
+        `👴 <b>DORMANT COIN WOKE UP!</b>`,
+        ``,
+        `<b>${mover.name}</b>  $${mover.symbol}`,
+        `<code>${mover.mint}</code>`,
+        ``,
+        `⏳ Age: <b>${ageStr}</b>`,
+        `💎 MC: <b>${mcStr}</b>`,
+        `📈 1H: <b>${fmtPct(mover.change1h)}</b>  |  24H: <b>${fmtPct(mover.change24h)}</b>`,
+        `⏱ Last traded: <b>${lastStr}</b>`,
+        ``,
+        `⚡ Old coin suddenly moving — possible OG situation.`,
+        `Check OG Hunter Radar for related new coins.`,
+        ``,
+        [
+          `<a href="https://axiom.trade/t/${mover.mint}">📊 Axiom</a>`,
+          `<a href="https://dexscreener.com/solana/${mover.mint}">📈 DexScr</a>`,
+          `<a href="https://pump.fun/${mover.mint}">🎱 pump.fun</a>`,
+        ].join('  |  '),
+      ].join('\n')
+
+      for (const chatId of chatIds) {
+        bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+          .catch(err => console.error('[Movers] Telegram error:', err?.message))
+      }
+    })
   })
 
   // Start pollers
@@ -156,6 +198,7 @@ async function main(): Promise<void> {
   walletPoller.start()
   moversPoller.start()
   ogMcTracker.start()
+  axiomPoller.start()
 
   // Start HTTP server + dashboard
   startServer(getStatus, monitor, walletPoller, moversPoller)
@@ -202,8 +245,8 @@ async function main(): Promise<void> {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
 
   // Graceful shutdown
-  process.on('SIGTERM', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, ogMcTracker, bot))
-  process.on('SIGINT', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, ogMcTracker, bot))
+  process.on('SIGTERM', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, ogMcTracker, axiomPoller, bot))
+  process.on('SIGINT', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, ogMcTracker, axiomPoller, bot))
 }
 
 async function gracefulShutdown(
@@ -212,6 +255,7 @@ async function gracefulShutdown(
   walletPoller: WalletPoller,
   moversPoller: MoversPoller,
   ogMcTracker: OgMcTracker,
+  axiomPoller: AxiomPoller,
   bot: TelegramBot
 ): Promise<void> {
   console.log('\n[Shutdown] Stopping services...')
@@ -219,6 +263,7 @@ async function gracefulShutdown(
   walletPoller.stop()
   moversPoller.stop()
   ogMcTracker.stop()
+  axiomPoller.stop()
   await monitor.stop()
   bot.stopPolling()
   console.log('[Shutdown] Done.')
