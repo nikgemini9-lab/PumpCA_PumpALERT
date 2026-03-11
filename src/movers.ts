@@ -1,77 +1,172 @@
 /**
- * Pump.fun Movers Poller
+ * Pump.fun Movers Poller — Helius Edition
  *
- * Polls pump.fun every 60s for the most recently traded tokens and maintains
- * a rolling 25-hour market-cap history per token to compute price changes
- * (5m / 1h / 6h / 24h) entirely in-memory — no DB needed.
+ * Replaces the Cloudflare-blocked frontend-api.pump.fun with a Helius pipeline:
  *
- * For graduated tokens (complete=true), it enriches the data with DexScreener
- * pair data (which already carries native price-change percentages).
+ *   1. Helius Enhanced Transactions  → 100 most-recent SWAPs on the pump.fun
+ *      bonding-curve program → extract recently-traded token mints.
  *
- * Key feature: "dormant coin" detection.
- * A coin is considered DORMANT when:
- *   - Age ≥ 25 days (old / potentially OG coin)
- *   - Traded within the last 24 hours (it just woke up)
- *   - |1h change| ≥ 30%  OR  |6h change| ≥ 60%
- * When first detected, a 'dormant' event is emitted → Telegram alert.
+ *   2. DexScreener /tokens/{mints}   → graduated token metadata + native price
+ *      changes (m5 / h1 / h6 / h24), volume, txn counts, pairCreatedAt.
+ *
+ *   3. Helius getMultipleAccountsInfo → bonding-curve account state for
+ *      non-graduated tokens → compute MC entirely on-chain.
+ *
+ *   4. Helius /v0/token-metadata      → name / symbol for non-graduated mints
+ *      not yet in DexScreener.
+ *
+ * A rolling mintCache (≤ 500 entries) accumulates mints across polls so that
+ * tokens discovered earlier continue to be enriched via DexScreener even after
+ * they graduate and stop appearing in bonding-curve transactions.
+ *
+ * Poll interval: 5 minutes  (100 credits × 288 polls/day ≈ 864 k credits/month
+ * — fits comfortably inside the Helius free-tier 1 M credits/month cap).
+ *
+ * Dormant-coin detection (unchanged logic):
+ *   age ≥ 25 days  AND  traded within last 24 h  AND  |1h| ≥ 30% OR |6h| ≥ 60%
  */
 
 import axios from 'axios'
+import { Connection, PublicKey } from '@solana/web3.js'
 import { EventEmitter } from 'events'
+import { config } from './config'
 
-const PUMP_API = 'https://frontend-api.pump.fun/coins'
-const DEX_API  = 'https://api.dexscreener.com/latest/dex/tokens'
+// ── Constants ──────────────────────────────────────────────────────────────────
 
-const POLL_MS           = 60_000  // 60 seconds
-const DORMANT_AGE_DAYS  = 25
-const DORMANT_MOVE_1H   = 30      // % threshold for 1h move
-const DORMANT_MOVE_6H   = 60      // % threshold for 6h move
-const HISTORY_MAX_MS    = 25 * 60 * 60_000  // keep 25h of snapshots
+const PUMP_PROGRAM_STR = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
+const PUMP_PROGRAM     = new PublicKey(PUMP_PROGRAM_STR)
+const WSOL             = 'So11111111111111111111111111111111111111112'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+const HELIUS_API  = 'https://api.helius.xyz/v0'
+const DEX_API     = 'https://api.dexscreener.com/latest/dex/tokens'
+const JUPITER_API = 'https://api.jup.ag/price/v2'
 
-interface PumpRaw {
-  mint: string
-  name: string
-  symbol: string
-  usd_market_cap: number
-  created_timestamp: number       // epoch ms
-  last_trade_unix_time: number    // epoch seconds
-  complete: boolean
-  reply_count: number
-  image_uri?: string
-  nsfw?: boolean
+const POLL_MS          = 5 * 60_000   // 5 minutes
+const DORMANT_AGE_DAYS = 25
+const DORMANT_MOVE_1H  = 30           // % threshold
+const DORMANT_MOVE_6H  = 60           // % threshold
+const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
+const MAX_MINT_CACHE   = 500          // rolling window of known mints
+
+// ── Internal types ─────────────────────────────────────────────────────────────
+
+interface MintRecord {
+  name:        string
+  symbol:      string
+  firstSeen:   number   // epoch ms — proxy for token creation time
+  lastTradeAt: number   // epoch ms — most recent observed trade
+  graduated:   boolean
 }
 
-export interface MoverEntry {
-  mint: string
-  name: string
-  symbol: string
-  marketCap: number
-  ageHours: number
-  createdAt: number               // epoch ms
-  lastTradeAt: number             // epoch ms
-  change5m: number | null
-  change1h: number | null
-  change6h: number | null
-  change24h: number | null
-  volume24h: number | null
-  txns24h: number | null
-  graduated: boolean
-  isDormant: boolean
+interface BondingCurveData {
+  virtualTokenReserves: bigint
+  virtualSolReserves:   bigint
+  tokenTotalSupply:     bigint
+  complete:             boolean
+}
+
+interface DexPairData {
+  name:          string
+  symbol:        string
+  fdv:           number | null
+  pairCreatedAt: number | null   // epoch ms
+  priceChange:   { m5?: number; h1?: number; h6?: number; h24?: number } | null
+  volume:        { h24?: number } | null
+  txns:          { h24?: { buys: number; sells: number } } | null
+  liquidityUsd:  number
 }
 
 interface Snap { ts: number; mc: number }
 
-// ── Class ─────────────────────────────────────────────────────────────────────
+// ── Public types ───────────────────────────────────────────────────────────────
+
+export interface MoverEntry {
+  mint:        string
+  name:        string
+  symbol:      string
+  marketCap:   number
+  ageHours:    number
+  createdAt:   number   // epoch ms
+  lastTradeAt: number   // epoch ms
+  change5m:    number | null
+  change1h:    number | null
+  change6h:    number | null
+  change24h:   number | null
+  volume24h:   number | null
+  txns24h:     number | null
+  graduated:   boolean
+  isDormant:   boolean
+}
+
+// ── SOL price cache ────────────────────────────────────────────────────────────
+
+let _solPrice = { price: 150, ts: 0 }
+
+async function getSolPrice(): Promise<number> {
+  if (Date.now() - _solPrice.ts < 5 * 60_000) return _solPrice.price
+  try {
+    const res = await axios.get(`${JUPITER_API}?ids=${WSOL}`, { timeout: 5_000 })
+    const p = parseFloat(String(res.data?.data?.[WSOL]?.price ?? ''))
+    if (p > 0) _solPrice = { price: p, ts: Date.now() }
+  } catch { /* use cached */ }
+  return _solPrice.price
+}
+
+// ── Bonding curve helpers ──────────────────────────────────────────────────────
+
+function getBondingCurvePda(mint: string): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('bonding-curve'), new PublicKey(mint).toBuffer()],
+    PUMP_PROGRAM
+  )[0]
+}
+
+/**
+ * Bonding curve account layout (Anchor, 8-byte discriminator prefix):
+ *   offset  8 — virtual_token_reserves : u64
+ *   offset 16 — virtual_sol_reserves   : u64
+ *   offset 24 — real_token_reserves    : u64
+ *   offset 32 — real_sol_reserves      : u64
+ *   offset 40 — token_total_supply     : u64
+ *   offset 48 — complete               : bool
+ */
+function parseBondingCurve(data: Buffer): BondingCurveData | null {
+  if (data.length < 49) return null
+  try {
+    return {
+      virtualTokenReserves: data.readBigUInt64LE(8),
+      virtualSolReserves:   data.readBigUInt64LE(16),
+      tokenTotalSupply:     data.readBigUInt64LE(40),
+      complete:             data.readUInt8(48) !== 0,
+    }
+  } catch { return null }
+}
+
+/**
+ * MC (USD) = (vSol_lamports / 1e9) / (vToken_units / 1e6) * totalSupply_tokens * solPrice
+ * Simplifies to: vSolReserves * totalSupply / (vTokenReserves * 1000) * solPrice / 1e12
+ */
+function computeMcUsd(curve: BondingCurveData, solPrice: number): number {
+  const pricePerTokenSol =
+    (Number(curve.virtualSolReserves) / 1e9) /
+    (Number(curve.virtualTokenReserves) / 1e6)
+  const totalSupplyTokens = Number(curve.tokenTotalSupply) / 1e6
+  return pricePerTokenSol * totalSupplyTokens * solPrice
+}
+
+// ── Class ──────────────────────────────────────────────────────────────────────
 
 export class MoversPoller extends EventEmitter {
+  private mintCache   = new Map<string, MintRecord>()   // mint → record
   private history     = new Map<string, Snap[]>()
   private movers      = new Map<string, MoverEntry>()
   private dormantSeen = new Set<string>()
   private timer: NodeJS.Timeout | null = null
   private lastPollAt: number | null = null
-  private lastError: string | null = null
+  private lastError:  string | null = null
+
+  private get heliusKey(): string  { return config.solana.heliusApiKey }
+  private get heliusRpc(): string  { return config.solana.rpcUrl }
 
   start(): void {
     this.poll().catch(err => console.error('[Movers] poll error:', err?.message))
@@ -79,94 +174,293 @@ export class MoversPoller extends EventEmitter {
       () => this.poll().catch(err => console.error('[Movers] poll error:', err?.message)),
       POLL_MS
     )
-    console.log('[Movers] Poller started — 60s interval')
+    console.log('[Movers] Poller started — 5 min interval (Helius)')
   }
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null }
   }
 
-  getMovers(): MoverEntry[] {
-    return Array.from(this.movers.values())
-  }
+  getMovers(): MoverEntry[] { return Array.from(this.movers.values()) }
 
   getStatus() {
     return {
-      count: this.movers.size,
+      count:      this.movers.size,
       lastPollAt: this.lastPollAt,
-      lastError: this.lastError,
+      lastError:  this.lastError,
     }
   }
 
-  // ── Core poll loop ──────────────────────────────────────────────────────────
+  // ── Core poll ────────────────────────────────────────────────────────────────
 
   private async poll(): Promise<void> {
-    const pumpTokens = await this.fetchPumpMovers()
-    if (pumpTokens.length === 0) return
+    if (!this.heliusKey) {
+      this.lastError = 'HELIUS_API_KEY not set'
+      console.warn('[Movers] HELIUS_API_KEY not set — skipping poll')
+      return
+    }
 
-    // Enrich graduated tokens with DexScreener data
-    const graduatedMints = pumpTokens.filter(t => t.complete).map(t => t.mint)
-    const dexMap = graduatedMints.length > 0
-      ? await this.fetchDexData(graduatedMints)
-      : new Map<string, any>()
+    // 1. Discover recently-traded mints via Helius Enhanced Transactions
+    await this.fetchRecentMints()
 
-    const now = Date.now()
+    if (this.mintCache.size === 0) return
 
-    for (const raw of pumpTokens) {
-      // Record market cap snapshot
-      this.addSnap(raw.mint, now, raw.usd_market_cap)
+    const now      = Date.now()
+    const solPrice = await getSolPrice()
 
-      // Compute price changes from history
-      const computed = this.computeChanges(raw.mint, now)
+    // 2. Enrich ALL cached mints via DexScreener (graduated tokens)
+    const allMints = Array.from(this.mintCache.keys())
+    const dexMap   = await this.fetchDexData(allMints)
 
-      // DexScreener data (takes precedence for graduated tokens)
-      const dex = dexMap.get(raw.mint)
+    // 3. Bonding curve state for mints not found on DexScreener
+    const nonGrad  = allMints.filter(m => !dexMap.has(m))
+    const curveMap = await this.fetchBondingCurves(nonGrad)
 
-      const ageMs    = now - raw.created_timestamp
+    // 4. Token metadata (name/symbol) for new non-graduated mints
+    const needMeta = nonGrad.filter(m => {
+      const rec = this.mintCache.get(m)
+      return rec && (!rec.name || rec.name === m.slice(0, 8))
+    })
+    if (needMeta.length > 0) await this.fetchTokenMetadata(needMeta)
+
+    // 5. Build MoverEntry for every mint in cache
+    let updated = 0
+    for (const mint of allMints) {
+      const rec   = this.mintCache.get(mint)!
+      const dex   = dexMap.get(mint)
+      const curve = curveMap.get(mint)
+
+      // Skip if we have no usable data
+      const graduated = dex ? true : (curve?.complete ?? rec.graduated)
+      const mc = dex?.fdv ?? (curve ? computeMcUsd(curve, solPrice) : 0)
+      if (!mc || mc <= 0) continue
+
+      // Creation timestamp: DexScreener pairCreatedAt is the best proxy
+      const createdAt  = dex?.pairCreatedAt ?? rec.firstSeen
+      const lastTradeAt = rec.lastTradeAt
+      const ageMs    = now - createdAt
       const ageHours = Math.floor(ageMs / (60 * 60_000))
       const ageDays  = ageHours / 24
 
-      const change1h  = dex?.priceChange?.h1  ?? computed.c1h
-      const change6h  = dex?.priceChange?.h6  ?? computed.c6h
+      // MC history snapshot → computed price changes (fallback for non-graduated)
+      this.addSnap(mint, now, mc)
+      const computed = this.computeChanges(mint, now)
+
+      const change1h = dex?.priceChange?.h1  ?? computed.c1h
+      const change6h = dex?.priceChange?.h6  ?? computed.c6h
 
       const isDormant =
         ageDays >= DORMANT_AGE_DAYS &&
-        raw.last_trade_unix_time * 1000 > now - 24 * 60 * 60_000 &&
-        (
-          Math.abs(change1h  ?? 0) >= DORMANT_MOVE_1H ||
-          Math.abs(change6h  ?? 0) >= DORMANT_MOVE_6H
-        )
+        lastTradeAt > now - 24 * 60 * 60_000 &&
+        (Math.abs(change1h ?? 0) >= DORMANT_MOVE_1H ||
+         Math.abs(change6h ?? 0) >= DORMANT_MOVE_6H)
 
       const entry: MoverEntry = {
-        mint:       raw.mint,
-        name:       raw.name,
-        symbol:     raw.symbol,
-        marketCap:  raw.usd_market_cap,
+        mint,
+        name:      dex?.name   ?? rec.name,
+        symbol:    dex?.symbol ?? rec.symbol,
+        marketCap: mc,
         ageHours,
-        createdAt:  raw.created_timestamp,
-        lastTradeAt: raw.last_trade_unix_time * 1000,
-        change5m:   dex?.priceChange?.m5  ?? computed.c5m,
+        createdAt,
+        lastTradeAt,
+        change5m:  dex?.priceChange?.m5  ?? computed.c5m,
         change1h,
         change6h,
-        change24h:  dex?.priceChange?.h24 ?? computed.c24h,
-        volume24h:  dex?.volume?.h24      ?? null,
-        txns24h:    dex ? ((dex.txns?.h24?.buys ?? 0) + (dex.txns?.h24?.sells ?? 0)) : null,
-        graduated:  raw.complete,
+        change24h: dex?.priceChange?.h24 ?? computed.c24h,
+        volume24h: dex?.volume?.h24      ?? null,
+        txns24h:   dex
+          ? ((dex.txns?.h24?.buys ?? 0) + (dex.txns?.h24?.sells ?? 0))
+          : null,
+        graduated,
         isDormant,
       }
 
-      this.movers.set(raw.mint, entry)
+      // Keep mintCache name/symbol up-to-date
+      if (dex) {
+        rec.name     = dex.name
+        rec.symbol   = dex.symbol
+        rec.graduated = true
+      }
 
-      if (isDormant && !this.dormantSeen.has(raw.mint)) {
-        this.dormantSeen.add(raw.mint)
+      this.movers.set(mint, entry)
+      updated++
+
+      if (isDormant && !this.dormantSeen.has(mint)) {
+        this.dormantSeen.add(mint)
         this.emit('dormant', entry)
-        console.log(`[Movers] 👴 Dormant wakeup: ${raw.name} (${raw.mint.slice(0, 8)}) age ${Math.floor(ageDays)}d 1h=${change1h?.toFixed(1)}%`)
+        console.log(
+          `[Movers] 👴 Dormant wakeup: ${entry.name} (${mint.slice(0, 8)}) ` +
+          `age ${Math.floor(ageDays)}d 1h=${change1h?.toFixed(1)}%`
+        )
       }
     }
 
     this.lastPollAt = Date.now()
-    this.lastError = null
-    console.log(`[Movers] Updated ${pumpTokens.length} tokens (${graduatedMints.length} via DexScreener)`)
+    this.lastError  = null
+    console.log(
+      `[Movers] Updated ${updated}/${allMints.length} tokens ` +
+      `(${dexMap.size} DexScreener, ${curveMap.size} bonding-curve)`
+    )
+  }
+
+  // ── Step 1: Helius Enhanced Transactions ────────────────────────────────────
+
+  private async fetchRecentMints(): Promise<void> {
+    try {
+      const res = await axios.get(
+        `${HELIUS_API}/addresses/${PUMP_PROGRAM_STR}/transactions`,
+        {
+          params: { 'api-key': this.heliusKey, limit: 100, type: 'SWAP' },
+          timeout: 20_000,
+        }
+      )
+
+      const txList: any[] = Array.isArray(res.data) ? res.data : []
+      const now = Date.now()
+
+      for (const tx of txList) {
+        const txTs: number = tx.timestamp ? tx.timestamp * 1000 : now
+
+        for (const t of tx.tokenTransfers ?? []) {
+          const mint: string | undefined = t.mint
+          if (!mint || mint === WSOL) continue
+
+          const existing = this.mintCache.get(mint)
+          if (existing) {
+            if (txTs > existing.lastTradeAt) existing.lastTradeAt = txTs
+          } else {
+            this.mintCache.set(mint, {
+              name:        mint.slice(0, 8),   // placeholder until metadata loaded
+              symbol:      '?',
+              firstSeen:   txTs,
+              lastTradeAt: txTs,
+              graduated:   false,
+            })
+          }
+        }
+      }
+
+      // Evict oldest entries if cache is over the limit
+      if (this.mintCache.size > MAX_MINT_CACHE) {
+        const sorted = Array.from(this.mintCache.entries())
+          .sort((a, b) => a[1].lastTradeAt - b[1].lastTradeAt)
+        const toRemove = sorted.slice(0, this.mintCache.size - MAX_MINT_CACHE)
+        for (const [m] of toRemove) {
+          this.mintCache.delete(m)
+          this.history.delete(m)
+          this.movers.delete(m)
+        }
+      }
+
+      console.log(
+        `[Movers] Helius: ${txList.length} txs → ` +
+        `${this.mintCache.size} mints in cache`
+      )
+    } catch (err: any) {
+      const status = err?.response?.status ?? 'net'
+      const msg    = `[${status}] ${err?.message}`
+      console.warn('[Movers] Helius Enhanced Tx error:', msg)
+      this.lastError = msg
+    }
+  }
+
+  // ── Step 2: DexScreener enrichment ─────────────────────────────────────────
+
+  private async fetchDexData(mints: string[]): Promise<Map<string, DexPairData>> {
+    const result = new Map<string, DexPairData>()
+    if (mints.length === 0) return result
+
+    try {
+      const BATCH = 30
+      for (let i = 0; i < mints.length; i += BATCH) {
+        const batch = mints.slice(i, i + BATCH)
+        const res   = await axios.get(`${DEX_API}/${batch.join(',')}`, {
+          timeout: 10_000,
+          headers: { 'User-Agent': 'PumpAlert/1.0' },
+        })
+        const pairs: any[] = res.data?.pairs ?? []
+        for (const pair of pairs) {
+          if (pair.chainId !== 'solana' || !pair.baseToken?.address) continue
+          const addr = pair.baseToken.address as string
+          const prev = result.get(addr)
+          const liq  = pair.liquidity?.usd ?? 0
+          if (!prev || liq > prev.liquidityUsd) {
+            result.set(addr, {
+              name:          pair.baseToken.name   ?? '',
+              symbol:        pair.baseToken.symbol ?? '',
+              fdv:           pair.fdv               ?? null,
+              pairCreatedAt: pair.pairCreatedAt     ?? null,
+              priceChange:   pair.priceChange        ?? null,
+              volume:        pair.volume             ?? null,
+              txns:          pair.txns               ?? null,
+              liquidityUsd:  liq,
+            })
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Movers] DexScreener error:', err?.message)
+    }
+
+    return result
+  }
+
+  // ── Step 3: Bonding curve on-chain state ───────────────────────────────────
+
+  private async fetchBondingCurves(
+    mints: string[]
+  ): Promise<Map<string, BondingCurveData>> {
+    const result = new Map<string, BondingCurveData>()
+    if (mints.length === 0) return result
+
+    try {
+      const conn  = new Connection(this.heliusRpc, 'confirmed')
+      const BATCH = 100   // getMultipleAccountsInfo limit
+
+      for (let i = 0; i < mints.length; i += BATCH) {
+        const batch = mints.slice(i, i + BATCH)
+        const pdas  = batch.map(m => getBondingCurvePda(m))
+        const infos = await conn.getMultipleAccountsInfo(pdas)
+
+        for (let j = 0; j < batch.length; j++) {
+          const info = infos[j]
+          if (!info?.data) continue
+          const curve = parseBondingCurve(Buffer.from(info.data))
+          if (curve) result.set(batch[j], curve)
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Movers] Bonding curve fetch error:', err?.message)
+    }
+
+    return result
+  }
+
+  // ── Step 4: Helius token metadata (name / symbol) ─────────────────────────
+
+  private async fetchTokenMetadata(mints: string[]): Promise<void> {
+    if (mints.length === 0) return
+    try {
+      const res = await axios.post(
+        `${HELIUS_API}/token-metadata?api-key=${this.heliusKey}`,
+        { mintAccounts: mints.slice(0, 100) },
+        { timeout: 10_000 }
+      )
+      for (const item of res.data ?? []) {
+        if (!item.account) continue
+        const rec = this.mintCache.get(item.account)
+        if (!rec) continue
+
+        // Helius returns on-chain Metaplex metadata
+        const d = item.onChainMetadata?.metadata?.data ?? item.legacyMetadata
+        if (d) {
+          rec.name   = (d.name   ?? '').replace(/\0/g, '').trim() || rec.name
+          rec.symbol = (d.symbol ?? '').replace(/\0/g, '').trim() || rec.symbol
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Movers] Token metadata error:', err?.message)
+    }
   }
 
   // ── History helpers ─────────────────────────────────────────────────────────
@@ -175,13 +469,12 @@ export class MoversPoller extends EventEmitter {
     if (!this.history.has(mint)) this.history.set(mint, [])
     const snaps = this.history.get(mint)!
     snaps.push({ ts, mc })
-    // Prune old snapshots
     const cutoff = ts - HISTORY_MAX_MS
     while (snaps.length > 0 && snaps[0].ts < cutoff) snaps.shift()
   }
 
   private computeChanges(mint: string, now: number) {
-    const snaps = this.history.get(mint) ?? []
+    const snaps   = this.history.get(mint) ?? []
     const current = snaps[snaps.length - 1]?.mc
 
     const pct = (target: number, tol: number): number | null => {
@@ -206,60 +499,5 @@ export class MoversPoller extends EventEmitter {
       if (!best) return s
       return dist < Math.abs(best.ts - target) ? s : best
     }, undefined)
-  }
-
-  // ── Data fetchers ───────────────────────────────────────────────────────────
-
-  private async fetchPumpMovers(): Promise<PumpRaw[]> {
-    try {
-      const url = `${PUMP_API}?offset=0&limit=50&sort=last_trade_unix_time&order=DESC&includeNsfw=false`
-      const res = await axios.get<PumpRaw[]>(url, {
-        timeout: 12_000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; PumpAlert/1.0)',
-          'Accept': 'application/json',
-          'Origin': 'https://pump.fun',
-          'Referer': 'https://pump.fun/',
-        },
-      })
-      const data = Array.isArray(res.data) ? res.data : []
-      return data.filter(t => t.mint && t.name && t.usd_market_cap > 0)
-    } catch (err: any) {
-      const status = err?.response?.status ?? 'net'
-      const msg = `[${status}] ${err?.message}`
-      console.warn('[Movers] pump.fun fetch error:', msg)
-      this.lastError = msg
-      return []
-    }
-  }
-
-  private async fetchDexData(mints: string[]): Promise<Map<string, any>> {
-    const result = new Map<string, any>()
-    if (mints.length === 0) return result
-
-    try {
-      const BATCH = 30
-      for (let i = 0; i < mints.length; i += BATCH) {
-        const batch = mints.slice(i, i + BATCH)
-        const res = await axios.get(`${DEX_API}/${batch.join(',')}`, {
-          timeout: 10_000,
-          headers: { 'User-Agent': 'PumpAlert/1.0' },
-        })
-        const pairs: any[] = res.data?.pairs ?? []
-        for (const pair of pairs) {
-          if (pair.chainId === 'solana' && pair.baseToken?.address) {
-            // Prefer the pair with highest liquidity if multiple exist
-            const prev = result.get(pair.baseToken.address)
-            if (!prev || (pair.liquidity?.usd ?? 0) > (prev.liquidity?.usd ?? 0)) {
-              result.set(pair.baseToken.address, pair)
-            }
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn('[Movers] DexScreener enrich error:', err?.message)
-    }
-
-    return result
   }
 }
