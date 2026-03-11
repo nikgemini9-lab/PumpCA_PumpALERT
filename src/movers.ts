@@ -70,6 +70,8 @@ export class MoversPoller extends EventEmitter {
   private movers      = new Map<string, MoverEntry>()
   private dormantSeen = new Set<string>()
   private timer: NodeJS.Timeout | null = null
+  private lastPollAt: number | null = null
+  private lastError: string | null = null
 
   start(): void {
     this.poll().catch(err => console.error('[Movers] poll error:', err?.message))
@@ -86,6 +88,14 @@ export class MoversPoller extends EventEmitter {
 
   getMovers(): MoverEntry[] {
     return Array.from(this.movers.values())
+  }
+
+  getStatus() {
+    return {
+      count: this.movers.size,
+      lastPollAt: this.lastPollAt,
+      lastError: this.lastError,
+    }
   }
 
   // ── Core poll loop ──────────────────────────────────────────────────────────
@@ -154,6 +164,8 @@ export class MoversPoller extends EventEmitter {
       }
     }
 
+    this.lastPollAt = Date.now()
+    this.lastError = null
     console.log(`[Movers] Updated ${pumpTokens.length} tokens (${graduatedMints.length} via DexScreener)`)
   }
 
@@ -203,15 +215,20 @@ export class MoversPoller extends EventEmitter {
       const url = `${PUMP_API}?offset=0&limit=50&sort=last_trade_unix_time&order=DESC&includeNsfw=false`
       const res = await axios.get<PumpRaw[]>(url, {
         timeout: 12_000,
-        headers: { 'User-Agent': 'PumpAlert/1.0' },
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; PumpAlert/1.0)',
+          'Accept': 'application/json',
+          'Origin': 'https://pump.fun',
+          'Referer': 'https://pump.fun/',
+        },
       })
       const data = Array.isArray(res.data) ? res.data : []
       return data.filter(t => t.mint && t.name && t.usd_market_cap > 0)
     } catch (err: any) {
-      const status = err?.response?.status
-      if (!(status >= 500)) {
-        console.warn('[Movers] pump.fun fetch error:', err?.message)
-      }
+      const status = err?.response?.status ?? 'net'
+      const msg = `[${status}] ${err?.message}`
+      console.warn('[Movers] pump.fun fetch error:', msg)
+      this.lastError = msg
       return []
     }
   }

@@ -287,19 +287,20 @@ export function startServer(
   // ── GET /api/movers ───────────────────────────────────────────────────────
   app.get('/api/movers', (req: Request, res: Response) => {
     const filter = req.query.filter as string | undefined
+    const status = moversPoller.getStatus()
     let movers = moversPoller.getMovers()
 
     if (filter === 'dormant') movers = movers.filter(m => m.isDormant)
     else if (filter === 'gainers') movers = movers.filter(m => (m.change1h ?? 0) > 0)
 
-    // Default sort: biggest absolute 1h move first, then by 24h, then by MC
+    // Default sort: biggest absolute 1h move first, then by 24h
     movers.sort((a, b) => {
       const aScore = Math.abs(a.change1h ?? a.change24h ?? 0)
       const bScore = Math.abs(b.change1h ?? b.change24h ?? 0)
       return bScore - aScore
     })
 
-    res.json(movers)
+    res.json({ movers, lastPollAt: status.lastPollAt, lastError: status.lastError })
   })
 
   // ── GET /api/users ────────────────────────────────────────────────────────

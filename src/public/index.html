@@ -818,6 +818,7 @@
           <span class="movers-title">🏄 Pump.fun Movers</span>
           <span class="badge" id="movers-badge">0</span>
           <span class="movers-sort-info" id="movers-sort-info">sorted by 1H%</span>
+          <span id="movers-updated" style="color:var(--text-muted);font-size:11px;margin-left:8px"></span>
         </div>
         <div class="movers-tabs">
           <button class="mover-tab active" onclick="setMoverFilter('all')">All</button>
@@ -871,6 +872,8 @@
   let moverSortKey = 'change1h'
   let moverSortDir = -1   // -1 = desc, 1 = asc
   let moversTimer = null
+  let moversLastPollAt = null
+  let moversLastError = null
 
   // ── AUTH ─────────────────────────────────────────────────────────
   function doLogin() {
@@ -901,6 +904,9 @@
     document.getElementById('app').style.display = 'block'
     refresh()
     fetchMovers()
+    // Retry after 8s in case first server poll hasn't completed yet
+    setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 8_000)
+    setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 20_000)
     refreshTimer = setInterval(refresh, 15000)
     moversTimer = setInterval(fetchMovers, 60000)
   }
@@ -1345,12 +1351,32 @@
   // ── MOVERS ──────────────────────────────────────────────────────────
   async function fetchMovers() {
     try {
-      allMovers = await apiGet('/api/movers')
+      const resp = await apiGet('/api/movers')
+      // Handle both old array shape (legacy) and new {movers, lastPollAt, lastError} shape
+      allMovers = Array.isArray(resp) ? resp : (resp.movers ?? [])
+      moversLastPollAt = Array.isArray(resp) ? null : (resp.lastPollAt ?? null)
+      moversLastError  = Array.isArray(resp) ? null : (resp.lastError  ?? null)
+
       const dormantCount = allMovers.filter(m => m.isDormant).length
-      const badge = document.getElementById('dormant-count')
-      if (badge) badge.textContent = dormantCount
-      const totalBadge = document.getElementById('movers-badge')
-      if (totalBadge) totalBadge.textContent = allMovers.length
+      document.getElementById('dormant-count')?.setAttribute('textContent', dormantCount)
+      const dormantEl = document.getElementById('dormant-count')
+      if (dormantEl) dormantEl.textContent = dormantCount
+      const totalEl = document.getElementById('movers-badge')
+      if (totalEl) totalEl.textContent = allMovers.length
+
+      const updEl = document.getElementById('movers-updated')
+      if (updEl) {
+        if (moversLastError) {
+          updEl.textContent = '⚠ API error'
+          updEl.title = moversLastError
+        } else if (moversLastPollAt) {
+          updEl.textContent = 'updated ' + timeAgo(Math.floor((Date.now() - moversLastPollAt) / 1000))
+          updEl.title = new Date(moversLastPollAt).toLocaleTimeString()
+        } else {
+          updEl.textContent = 'fetching…'
+        }
+      }
+
       renderMovers()
     } catch(e) {}
   }
@@ -1398,7 +1424,19 @@
     })
 
     if (list.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-dim);padding:24px">No movers yet — data loads every 60s</td></tr>'
+      let msg
+      if (allMovers.length > 0) {
+        // We have data but filter returned nothing
+        const filterLabel = moverFilter === 'dormant' ? 'dormant' : 'gainer'
+        msg = `No ${filterLabel} tokens in current movers`
+      } else if (moversLastError) {
+        msg = `⚠ pump.fun API unavailable — retrying… (${moversLastError})`
+      } else if (!moversLastPollAt) {
+        msg = 'Fetching movers… (first data in ~15s)'
+      } else {
+        msg = 'No movers data — retrying next poll'
+      }
+      tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:var(--text-dim);padding:24px">${msg}</td></tr>`
       return
     }
 
