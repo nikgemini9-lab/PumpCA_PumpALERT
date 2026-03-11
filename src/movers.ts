@@ -47,15 +47,17 @@ const DORMANT_MOVE_1H  = 30           // % threshold
 const DORMANT_MOVE_6H  = 60           // % threshold
 const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
 const MAX_MINT_CACHE   = 500          // rolling window of known mints
+const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
 
 // ── Internal types ─────────────────────────────────────────────────────────────
 
 interface MintRecord {
-  name:        string
-  symbol:      string
-  firstSeen:   number   // epoch ms — proxy for token creation time
-  lastTradeAt: number   // epoch ms — most recent observed trade
-  graduated:   boolean
+  name:            string
+  symbol:          string
+  firstSeen:       number   // epoch ms — proxy for token creation time
+  lastTradeAt:     number   // epoch ms — most recent observed trade
+  graduated:       boolean
+  metadataFetched: boolean  // true once Helius metadata has been loaded
 }
 
 interface BondingCurveData {
@@ -164,9 +166,15 @@ export class MoversPoller extends EventEmitter {
   private timer: NodeJS.Timeout | null = null
   private lastPollAt: number | null = null
   private lastError:  string | null = null
+  private _conn:      Connection | null = null  // reuse to avoid GET_SLOT overhead
 
   private get heliusKey(): string  { return config.solana.heliusApiKey }
   private get heliusRpc(): string  { return config.solana.rpcUrl }
+
+  private get conn(): Connection {
+    if (!this._conn) this._conn = new Connection(this.heliusRpc, 'confirmed')
+    return this._conn
+  }
 
   start(): void {
     this.poll().catch(err => console.error('[Movers] poll error:', err?.message))
@@ -216,10 +224,16 @@ export class MoversPoller extends EventEmitter {
     const nonGrad  = allMints.filter(m => !dexMap.has(m))
     const curveMap = await this.fetchBondingCurves(nonGrad)
 
-    // 4. Token metadata (name/symbol) for new non-graduated mints
+    // 4. Token metadata (name/symbol) — only for non-graduated mints above the MC
+    //    threshold that haven't had metadata fetched yet (saves TOKENS_METADATA_V2 credits)
     const needMeta = nonGrad.filter(m => {
       const rec = this.mintCache.get(m)
-      return rec && (!rec.name || rec.name === m.slice(0, 8))
+      if (!rec || rec.metadataFetched) return false
+      if (rec.name && rec.name !== m.slice(0, 8)) return false  // already have a name
+      const curve = curveMap.get(m)
+      if (!curve) return false
+      const mc = computeMcUsd(curve, solPrice)
+      return mc >= MIN_MC_USD
     })
     if (needMeta.length > 0) await this.fetchTokenMetadata(needMeta)
 
@@ -230,10 +244,10 @@ export class MoversPoller extends EventEmitter {
       const dex   = dexMap.get(mint)
       const curve = curveMap.get(mint)
 
-      // Skip if we have no usable data
+      // Skip if we have no usable data or below the MC threshold (pump.fun + $2.9K filter)
       const graduated = dex ? true : (curve?.complete ?? rec.graduated)
       const mc = dex?.fdv ?? (curve ? computeMcUsd(curve, solPrice) : 0)
-      if (!mc || mc <= 0) continue
+      if (!mc || mc < MIN_MC_USD) continue
 
       // Creation timestamp: DexScreener pairCreatedAt is the best proxy
       const createdAt  = dex?.pairCreatedAt ?? rec.firstSeen
@@ -330,11 +344,12 @@ export class MoversPoller extends EventEmitter {
             if (txTs > existing.lastTradeAt) existing.lastTradeAt = txTs
           } else {
             this.mintCache.set(mint, {
-              name:        mint.slice(0, 8),   // placeholder until metadata loaded
-              symbol:      '?',
-              firstSeen:   txTs,
-              lastTradeAt: txTs,
-              graduated:   false,
+              name:            mint.slice(0, 8),   // placeholder until metadata loaded
+              symbol:          '?',
+              firstSeen:       txTs,
+              lastTradeAt:     txTs,
+              graduated:       false,
+              metadataFetched: false,
             })
           }
         }
@@ -414,13 +429,12 @@ export class MoversPoller extends EventEmitter {
     if (mints.length === 0) return result
 
     try {
-      const conn  = new Connection(this.heliusRpc, 'confirmed')
       const BATCH = 100   // getMultipleAccountsInfo limit
 
       for (let i = 0; i < mints.length; i += BATCH) {
         const batch = mints.slice(i, i + BATCH)
         const pdas  = batch.map(m => getBondingCurvePda(m))
-        const infos = await conn.getMultipleAccountsInfo(pdas)
+        const infos = await this.conn.getMultipleAccountsInfo(pdas)
 
         for (let j = 0; j < batch.length; j++) {
           const info = infos[j]
@@ -457,6 +471,7 @@ export class MoversPoller extends EventEmitter {
           rec.name   = (d.name   ?? '').replace(/\0/g, '').trim() || rec.name
           rec.symbol = (d.symbol ?? '').replace(/\0/g, '').trim() || rec.symbol
         }
+        rec.metadataFetched = true  // don't re-fetch next poll
       }
     } catch (err: any) {
       console.warn('[Movers] Token metadata error:', err?.message)

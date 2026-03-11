@@ -6,21 +6,24 @@
   <title>PumpALERT Dashboard</title>
   <style>
     :root {
-      --bg: #0a0a0f;
-      --bg2: #12121a;
-      --bg3: #1a1a26;
-      --border: #2a2a3d;
+      --bg: #0d0e17;
+      --bg2: #12141f;
+      --bg3: #1a1c2e;
+      --border: #252840;
       --green: #00d084;
-      --green-dim: #00d08422;
+      --green-dim: #00d08418;
       --red: #ff4757;
-      --red-dim: #ff475722;
+      --red-dim: #ff475718;
       --yellow: #ffd32a;
       --blue: #4a9eff;
-      --text: #e0e0f0;
-      --text-dim: #7070a0;
-      --text-muted: #404060;
-      --radius: 10px;
-      --radius-sm: 6px;
+      --cyan: #00c2ff;
+      --cyan-dim: #00c2ff15;
+      --text: #e2e4f0;
+      --text-dim: #6b6f94;
+      --text-muted: #383b5a;
+      --radius: 12px;
+      --radius-sm: 7px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -97,36 +100,43 @@
     header {
       background: var(--bg2);
       border-bottom: 1px solid var(--border);
-      padding: 0 24px;
-      height: 56px;
+      padding: 0 28px;
+      height: 58px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       position: sticky;
       top: 0;
       z-index: 100;
+      backdrop-filter: blur(10px);
     }
 
-    .header-left { display: flex; align-items: center; gap: 12px; }
-    .logo { font-size: 18px; font-weight: 700; color: var(--green); letter-spacing: -0.3px; }
+    .header-left { display: flex; align-items: center; gap: 14px; }
+    .logo {
+      font-size: 17px;
+      font-weight: 800;
+      color: var(--cyan);
+      letter-spacing: -0.5px;
+    }
 
     .status-pill {
       display: flex;
       align-items: center;
       gap: 6px;
-      background: var(--green-dim);
-      border: 1px solid var(--green);
+      background: var(--cyan-dim);
+      border: 1px solid var(--cyan);
       border-radius: 20px;
-      padding: 3px 10px;
-      font-size: 12px;
-      color: var(--green);
+      padding: 3px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--cyan);
     }
 
     .status-dot {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
-      background: var(--green);
+      background: var(--cyan);
       animation: pulse 2s infinite;
     }
 
@@ -156,22 +166,41 @@
 
     /* ── MAIN GRID ───────────────────────────────────────────── */
     main {
-      padding: 20px 24px 24px;
-      max-width: 1600px;
+      padding: 20px 28px 32px;
+      max-width: 1700px;
       margin: 0 auto;
     }
 
+    /* 3-column layout: wallets | mid-col | right-col */
     .grid-top {
       display: grid;
-      grid-template-columns: 280px 1fr 340px;
+      grid-template-columns: 260px 1fr 340px;
       gap: 16px;
       margin-bottom: 16px;
+      align-items: start;
     }
 
-    @media (max-width: 1100px) {
+    /* Right stacked column: watchlist + alerts + og-radar */
+    .right-col {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Center stacked column: holdings + alerts */
+    .mid-col {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    @media (max-width: 1200px) {
+      .grid-top { grid-template-columns: 240px 1fr 300px; }
+    }
+    @media (max-width: 900px) {
       .grid-top { grid-template-columns: 1fr 1fr; }
     }
-    @media (max-width: 720px) {
+    @media (max-width: 600px) {
       .grid-top { grid-template-columns: 1fr; }
     }
 
@@ -182,37 +211,42 @@
       border-radius: var(--radius);
       display: flex;
       flex-direction: column;
+      box-shadow: var(--shadow);
+      transition: border-color 0.2s;
     }
+    .panel:hover { border-color: #30334e; }
 
     .panel-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 14px 16px;
+      padding: 13px 16px;
       border-bottom: 1px solid var(--border);
     }
 
     .panel-title {
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
       color: var(--text-dim);
     }
 
     .badge {
       background: var(--bg3);
+      border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 2px 8px;
+      padding: 1px 8px;
       font-size: 11px;
+      font-weight: 600;
       color: var(--text-dim);
     }
 
     .panel-body {
-      padding: 12px;
+      padding: 10px;
       flex: 1;
       overflow-y: auto;
-      max-height: 440px;
+      max-height: 400px;
     }
 
     .panel-footer {
@@ -405,22 +439,12 @@
     .tag-wallet { background: #7c5cfc22; color: #a78bfa; border: 1px solid #7c5cfc44; }
     .tag-manual { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
 
-    /* ── BOTTOM ROW: alerts (left) + radar (right) ────────────── */
-    .bottom-row {
-      display: grid;
-      grid-template-columns: 360px 1fr;
-      gap: 16px;
-      align-items: start;
-    }
-    @media (max-width: 1000px) {
-      .bottom-row { grid-template-columns: 1fr; }
-    }
-
     /* ── ALERTS SECTION ──────────────────────────────────────── */
     .alerts-panel {
       background: var(--bg2);
       border: 1px solid var(--border);
       border-radius: var(--radius);
+      box-shadow: var(--shadow);
     }
 
     .alert-row {
@@ -539,7 +563,7 @@
     .movers-title { font-size: 14px; font-weight: 700; }
     .movers-live-dot {
       width: 7px; height: 7px; border-radius: 50%;
-      background: var(--green); animation: pulse 2s infinite; flex-shrink: 0;
+      background: var(--cyan); animation: pulse 2s infinite; flex-shrink: 0;
     }
     .movers-tabs { display: flex; gap: 4px; }
     .mover-tab {
@@ -548,7 +572,7 @@
       cursor: pointer; transition: all 0.15s;
     }
     .mover-tab:hover { color: var(--text); border-color: var(--text-dim); }
-    .mover-tab.active { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+    .mover-tab.active { background: var(--cyan-dim); border-color: var(--cyan); color: var(--cyan); }
     .movers-sort-info { font-size: 11px; color: var(--text-muted); }
     .movers-table-wrap { overflow-x: auto; }
     .movers-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -560,7 +584,7 @@
     .movers-table th:hover { color: var(--text); }
     .movers-table th.sort-active { color: var(--green); }
     .movers-table td {
-      padding: 8px 12px; border-bottom: 1px solid #1a1a26; white-space: nowrap; vertical-align: middle;
+      padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: middle;
     }
     .movers-table tr:last-child td { border-bottom: none; }
     .movers-table tr.mover-row:hover { background: var(--bg3); }
@@ -579,6 +603,20 @@
     .pct-pos { color: var(--green); font-weight: 600; }
     .pct-neg { color: var(--red); font-weight: 600; }
     .pct-nil { color: var(--text-muted); }
+    .mover-ca {
+      font-family: monospace;
+      font-size: 10px;
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 2px 5px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .mover-ca:hover { color: var(--cyan); border-color: var(--cyan); }
+    .mover-ca.copied { color: var(--green); border-color: var(--green); }
+
     .mover-links { display: flex; gap: 3px; }
     .mover-links a {
       font-size: 10px; color: var(--text-dim); text-decoration: none;
@@ -726,7 +764,7 @@
   </header>
 
   <main>
-    <!-- TOP GRID -->
+    <!-- 3-COLUMN GRID: wallets | mid-col (holdings+alerts) | right-col (watchlist+radar) -->
     <div class="grid-top">
 
       <!-- ── WALLETS PANEL ──────────────────────────────────── -->
@@ -749,66 +787,71 @@
         </div>
       </div>
 
-      <!-- ── HOLDINGS PANEL ─────────────────────────────────── -->
-      <div class="panel">
-        <div class="holdings-header">
-          <span class="panel-title">Wallet Holdings</span>
-          <div class="wallet-selector" id="wallet-tabs">
-            <span class="wallet-tab" style="color:var(--text-muted);font-weight:400">Select a wallet</span>
+      <!-- ── MID COL: Holdings + Alerts stacked ────────────── -->
+      <div class="mid-col">
+
+        <!-- Holdings -->
+        <div class="panel">
+          <div class="holdings-header">
+            <span class="panel-title">Wallet Holdings</span>
+            <div class="wallet-selector" id="wallet-tabs">
+              <span class="wallet-tab" style="color:var(--text-muted);font-weight:400">Select a wallet</span>
+            </div>
+          </div>
+          <div class="panel-body" id="holdings-list">
+            <div class="empty">Select a wallet to see its holdings</div>
           </div>
         </div>
-        <div class="panel-body" id="holdings-list">
-          <div class="empty">Select a wallet to see its holdings</div>
-        </div>
-      </div>
 
-      <!-- ── WATCHLIST PANEL ────────────────────────────────── -->
-      <div class="panel">
-        <div class="panel-header">
-          <span class="panel-title">Watchlist</span>
-          <span class="badge" id="watchlist-badge">0</span>
-        </div>
-        <div class="panel-body" id="watchlist-list">
-          <div class="empty">No tokens tracked yet</div>
-        </div>
-        <div class="panel-footer">
-          <div class="add-form">
-            <input id="token-mint-input" type="text" placeholder="Token contract address (CA)" />
-            <button class="btn-add" onclick="addToken()">Add</button>
+        <!-- Alerts -->
+        <div class="alerts-panel">
+          <div class="panel-header">
+            <span class="panel-title">Recent Alerts</span>
+            <span class="badge" id="alerts-badge">0</span>
+          </div>
+          <div id="alerts-list" style="max-height:240px;overflow-y:auto">
+            <div class="empty" style="padding:20px">No alerts fired yet</div>
           </div>
         </div>
-      </div>
 
-    </div>
+      </div><!-- /mid-col -->
 
-    <!-- ── BOTTOM ROW ─────────────────────────────────────── -->
-    <div class="bottom-row">
+      <!-- ── RIGHT COL: Watchlist + OG Radar stacked ───────── -->
+      <div class="right-col">
 
-      <!-- ── ALERTS PANEL ─────────────────────────── -->
-      <div class="alerts-panel">
-        <div class="panel-header">
-          <span class="panel-title">Recent Alerts</span>
-          <span class="badge" id="alerts-badge">0</span>
-        </div>
-        <div id="alerts-list">
-          <div class="empty" style="padding:20px">No alerts fired yet</div>
-        </div>
-      </div>
-
-      <!-- ── OG HUNTER RADAR PANEL ─────────────────── -->
-      <div class="og-radar-panel">
-        <div class="panel-header">
-          <span class="panel-title">🎯 OG Hunter Radar</span>
-          <span class="badge" id="og-radar-badge">0</span>
-        </div>
-        <div id="og-radar-list">
-          <div class="empty" style="padding:20px">
-            No hits yet — watching for migrated tokens with a sleeping OG...
+        <!-- Watchlist -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Watchlist</span>
+            <span class="badge" id="watchlist-badge">0</span>
+          </div>
+          <div class="panel-body" id="watchlist-list">
+            <div class="empty">No tokens tracked yet</div>
+          </div>
+          <div class="panel-footer">
+            <div class="add-form">
+              <input id="token-mint-input" type="text" placeholder="Token CA" />
+              <button class="btn-add" onclick="addToken()">Add</button>
+            </div>
           </div>
         </div>
-      </div>
 
-    </div><!-- /bottom-row -->
+        <!-- OG Hunter Radar -->
+        <div class="og-radar-panel">
+          <div class="panel-header">
+            <span class="panel-title">🎯 OG Hunter Radar</span>
+            <span class="badge" id="og-radar-badge">0</span>
+          </div>
+          <div id="og-radar-list" style="max-height:280px;overflow-y:auto">
+            <div class="empty" style="padding:20px">
+              No hits yet — watching for migrated tokens with a sleeping OG...
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /right-col -->
+
+    </div><!-- /grid-top -->
 
     <!-- ── MOVERS SECTION ─────────────────────────────────────── -->
     <div class="movers-section">
@@ -832,6 +875,7 @@
             <tr>
               <th>#</th>
               <th onclick="sortMovers('name')">COIN</th>
+              <th>CA</th>
               <th onclick="sortMovers('marketCap')">MCAP</th>
               <th onclick="sortMovers('ageHours')">AGE</th>
               <th onclick="sortMovers('txns24h')">TXNS</th>
@@ -844,7 +888,7 @@
             </tr>
           </thead>
           <tbody id="movers-tbody">
-            <tr><td colspan="11" class="movers-loading">Loading movers… (first data in ~60s)</td></tr>
+            <tr><td colspan="12" class="movers-loading">Loading movers… (first data in ~60s)</td></tr>
           </tbody>
         </table>
       </div>
@@ -1436,7 +1480,7 @@
       } else {
         msg = 'No movers data — retrying next poll'
       }
-      tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:var(--text-dim);padding:24px">${msg}</td></tr>`
+      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:var(--text-dim);padding:24px">${msg}</td></tr>`
       return
     }
 
@@ -1453,9 +1497,13 @@
       const pump = `https://pump.fun/${m.mint}`
       const dex  = `https://dexscreener.com/solana/${m.mint}`
       const axiom = `https://axiom.trade/t/${m.mint}`
+      const mintShort = m.mint.slice(0, 6) + '…' + m.mint.slice(-4)
       return `<tr class="mover-row${dormantClass}">
         <td style="color:var(--text-dim)">${i+1}</td>
         <td><span style="font-weight:600">${escH(m.symbol)}</span>${dormantBadge}${gradBadge}<br><span style="color:var(--text-dim);font-size:11px">${escH(m.name)}</span></td>
+        <td>
+          <span class="mover-ca" onclick="copyMoverCA(this,'${m.mint}')" title="${m.mint}">${mintShort}</span>
+        </td>
         <td>${mcStr}</td>
         <td class="mover-age ${ageClass}">${ageStr}</td>
         <td style="font-size:11px">${txns}</td>
@@ -1465,7 +1513,7 @@
         <td>${fmtPct(m.change6h)}</td>
         <td>${fmtPct(m.change24h)}</td>
         <td>
-          <a href="${axiom}" target="_blank" style="color:var(--blue);margin-right:4px">AX</a>
+          <a href="${axiom}" target="_blank" style="color:var(--cyan);margin-right:4px">AX</a>
           <a href="${dex}" target="_blank" style="color:var(--text-dim);margin-right:4px">DX</a>
           <a href="${pump}" target="_blank" style="color:var(--text-dim)">PF</a>
         </td>
@@ -1489,6 +1537,18 @@
 
   function escH(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  }
+
+  function copyMoverCA(el, mint) {
+    navigator.clipboard.writeText(mint).then(() => {
+      el.classList.add('copied')
+      el.textContent = 'copied!'
+      toast('CA copied!')
+      setTimeout(() => {
+        el.classList.remove('copied')
+        el.textContent = mint.slice(0, 6) + '…' + mint.slice(-4)
+      }, 1500)
+    }).catch(() => toast('Copy failed', true))
   }
 
   // ── ALERT SOUND ─────────────────────────────────────────────────────
