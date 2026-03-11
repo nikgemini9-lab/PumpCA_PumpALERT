@@ -23,6 +23,7 @@ import { setupBot } from './bot'
 import { startServer } from './server'
 import { syncWebhook } from './heliusWebhook'
 import { OgHunterRadar } from './ogRadar'
+import { OgMcTracker } from './ogMcTracker'
 import { MoversPoller, MoverEntry } from './movers'
 import { MonitorStatus } from './types'
 
@@ -61,7 +62,10 @@ async function main(): Promise<void> {
   // 7. OG Hunter Radar
   const ogRadar = new OgHunterRadar(bot)
 
-  // 8. Movers poller
+  // 8. OG MC Tracker (milestone alerts: 2x/3x/5x/10x after radar fires)
+  const ogMcTracker = new OgMcTracker(bot)
+
+  // 9. Movers poller
   const moversPoller = new MoversPoller()
 
   // Wire up events
@@ -151,6 +155,7 @@ async function main(): Promise<void> {
   poller.start()
   walletPoller.start()
   moversPoller.start()
+  ogMcTracker.start()
 
   // Start HTTP server + dashboard
   startServer(getStatus, monitor, walletPoller, moversPoller)
@@ -197,8 +202,8 @@ async function main(): Promise<void> {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
 
   // Graceful shutdown
-  process.on('SIGTERM', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, bot))
-  process.on('SIGINT', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, bot))
+  process.on('SIGTERM', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, ogMcTracker, bot))
+  process.on('SIGINT', () => gracefulShutdown(monitor, poller, walletPoller, moversPoller, ogMcTracker, bot))
 }
 
 async function gracefulShutdown(
@@ -206,12 +211,14 @@ async function gracefulShutdown(
   poller: DexScreenerPoller,
   walletPoller: WalletPoller,
   moversPoller: MoversPoller,
+  ogMcTracker: OgMcTracker,
   bot: TelegramBot
 ): Promise<void> {
   console.log('\n[Shutdown] Stopping services...')
   poller.stop()
   walletPoller.stop()
   moversPoller.stop()
+  ogMcTracker.stop()
   await monitor.stop()
   bot.stopPolling()
   console.log('[Shutdown] Done.')
