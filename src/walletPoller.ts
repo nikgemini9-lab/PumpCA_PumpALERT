@@ -170,6 +170,12 @@ export class WalletPoller {
     const tag = newCount > 0 ? `, ${newCount} new added to watchlist` : ''
     console.log(`[WalletPoller] ${label}: ${holdings.length} token accounts with balance${tag}`)
 
+    // Remove watchlist tokens that are no longer held by any tracked wallet
+    const removed = await db.deactivateOrphanedWalletTokens()
+    if (removed.length > 0) {
+      console.log(`[WalletPoller] Auto-removed ${removed.length} sold token(s) from watchlist: ${removed.map(m => m.slice(0, 8)).join(', ')}`)
+    }
+
     // Resolve names/symbols for any tokens still showing as Unknown
     await this.resolveUnknownMetadata()
   }

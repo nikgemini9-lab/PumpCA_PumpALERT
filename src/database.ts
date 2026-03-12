@@ -114,6 +114,7 @@ export async function initDatabase(): Promise<void> {
   await migrateColumn('tokens', 'axiom_dex_paid', 'INTEGER')
   await migrateColumn('tokens', 'axiom_dev_funded_sol', 'REAL')
   await migrateColumn('tokens', 'axiom_updated_at', 'INTEGER')
+  await migrateColumn('tokens', 'price_updated_at', 'INTEGER')
 }
 
 async function migrateColumn(table: string, column: string, type: string): Promise<void> {
@@ -203,10 +204,15 @@ export async function updateTokenMetadata(
       ? data.marketCap
       : token.initialMarketCap ?? null
 
+  const priceUpdatedAt = (data.priceUsd != null || data.marketCap != null) ? Date.now() : null
+
   await client.execute({
     sql: `UPDATE tokens SET name = ?, symbol = ?, price_usd = ?, market_cap = ?,
-          twitter_handle = ?, initial_market_cap = ? WHERE mint = ?`,
-    args: [name, symbol, priceUsd ?? null, marketCap ?? null, twitterHandle, initialMarketCap, mint],
+          twitter_handle = ?, initial_market_cap = ?,
+          price_updated_at = COALESCE(?, price_updated_at)
+          WHERE mint = ?`,
+    args: [name, symbol, priceUsd ?? null, marketCap ?? null, twitterHandle, initialMarketCap,
+           priceUpdatedAt, mint],
   })
 }
 
@@ -419,6 +425,32 @@ export async function adjustHolding(walletAddress: string, mint: string, delta: 
   }
 }
 
+/**
+ * After a wallet scan, deactivate any wallet-sourced watchlist tokens that are
+ * no longer held by ANY tracked wallet. Safe: manually-added tokens are untouched.
+ * Returns the list of deactivated mints for logging.
+ */
+export async function deactivateOrphanedWalletTokens(): Promise<string[]> {
+  // Find active tokens that were added via a wallet AND have zero holdings across all wallets
+  const rows = (await client.execute(`
+    SELECT t.mint FROM tokens t
+    WHERE t.active = 1
+      AND t.source = 'wallet'
+      AND NOT EXISTS (
+        SELECT 1 FROM wallet_holdings wh WHERE wh.mint = t.mint AND wh.amount > 0
+      )
+  `)).rows as any[]
+
+  const mints = rows.map(r => r.mint as string)
+  for (const mint of mints) {
+    await client.execute({
+      sql: 'UPDATE tokens SET active = 0 WHERE mint = ?',
+      args: [mint],
+    })
+  }
+  return mints
+}
+
 export async function getWalletsHoldingToken(mint: string): Promise<Wallet[]> {
   const rows = (await client.execute({
     sql: `SELECT w.* FROM wallets w
@@ -588,6 +620,7 @@ function rowToToken(row: any): Token {
     axiomDexPaid: row.axiom_dex_paid != null ? Number(row.axiom_dex_paid) === 1 : null,
     axiomDevFundedSol: row.axiom_dev_funded_sol != null ? Number(row.axiom_dev_funded_sol) : null,
     axiomUpdatedAt: row.axiom_updated_at != null ? Number(row.axiom_updated_at) : null,
+    priceUpdatedAt: row.price_updated_at != null ? Number(row.price_updated_at) : null,
   }
 }
 

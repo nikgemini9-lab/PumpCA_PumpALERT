@@ -19,6 +19,7 @@ export interface Token {
   axiomDexPaid?: boolean | null
   axiomDevFundedSol?: number | null
   axiomUpdatedAt?: number | null
+  priceUpdatedAt?: number | null
 }
 
 export interface AxiomPairInfo {

@@ -150,6 +150,7 @@ export function startServer(
       axiom_dex_paid: t.axiomDexPaid ?? null,
       axiom_dev_funded_sol: t.axiomDevFundedSol ?? null,
       axiom_updated_at: t.axiomUpdatedAt ?? null,
+      price_updated_at: t.priceUpdatedAt ?? null,
       alert_count: await db.getAlertCount(t.mint),
     })))
     res.json(result)

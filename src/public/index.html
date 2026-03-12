@@ -1289,7 +1289,15 @@
         </div>
         <div class="token-price" style="margin-top:2px">
           <div class="price">${t.price_usd ? '$' + fmtPrice(t.price_usd) : '<span style="color:var(--text-muted);font-size:10px">No pair</span>'}</div>
-          <div class="mc">${t.market_cap ? fmtNum(t.market_cap) : '–'}</div>
+          <div class="mc">${(() => {
+            if (!t.market_cap) return '–'
+            const staleMs = t.price_updated_at ? Date.now() - t.price_updated_at : null
+            const isStale = staleMs != null && staleMs > 30 * 60_000
+            const staleMin = staleMs != null ? Math.floor(staleMs / 60_000) : null
+            const tip = isStale ? ` title="MC last updated ${staleMin}m ago — may be stale"` : ''
+            const style = isStale ? 'color:#888;text-decoration:line-through' : ''
+            return `<span style="${style}"${tip}>${fmtNum(t.market_cap)}</span>${isStale ? ' <span style="color:#f44336;font-size:10px" title="Price not updated in '+staleMin+'m">stale</span>' : ''}`
+          })()}</div>
         </div>
         <button class="btn-remove" style="margin-top:2px" onclick="removeToken('${t.mint}')">✕</button>
       </div>`
