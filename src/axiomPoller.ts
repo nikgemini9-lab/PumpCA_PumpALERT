@@ -28,8 +28,8 @@ const REQUEST_DELAY_MS = 250
 
 // Movers polling constants
 const MOVER_POLL_INTERVAL_MS = 60_000  // separate 60s cycle
-const MOVER_REQUEST_DELAY_MS = 500     // more conservative for larger batches
-const MAX_MOVERS_TO_POLL = 100         // cap to avoid runaway requests
+const MOVER_REQUEST_DELAY_MS = 300     // delay between requests
+const MAX_MOVERS_TO_POLL = 10          // top 10 by MC
 
 // Standalone viewer-alert cooldown: 5 minutes per token
 const VIEWER_ALERT_COOLDOWN_MS = 5 * 60_000
@@ -248,7 +248,8 @@ export class AxiomPoller extends EventEmitter {
     for (const mover of sorted) {
       try {
         // Graduated tokens: use DexScreener pair address (Raydium pool)
-        // Non-graduated: fall back to bonding curve PDA
+        // Non-graduated: use mint address directly
+        const pairUsed = mover.pairAddress || mover.mint
         const info = await this.fetchPairInfo(mover.mint, mover.pairAddress)
         if (info) {
           this.moversAxiomData.set(mover.mint, {
@@ -258,9 +259,12 @@ export class AxiomPoller extends EventEmitter {
           })
           fetched++
           if (info.userCount > 0) withViewers++
+          console.log(`[Axiom] ${mover.mint.slice(0, 8)}… pair=${pairUsed.slice(0, 8)}… viewers=${info.userCount} top10=${info.top10Holders}%`)
+        } else {
+          console.log(`[Axiom] ${mover.mint.slice(0, 8)}… pair=${pairUsed.slice(0, 8)}… → null (404 or auth fail)`)
         }
-      } catch {
-        // Skip individual failures silently
+      } catch (err: any) {
+        console.log(`[Axiom] ${mover.mint.slice(0, 8)}… error: ${err?.message}`)
       }
       await sleep(MOVER_REQUEST_DELAY_MS)
     }
