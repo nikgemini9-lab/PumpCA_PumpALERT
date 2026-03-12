@@ -1627,9 +1627,11 @@
       const mintShort = m.mint.slice(0, 6) + '…' + m.mint.slice(-4)
       const viewersHtml = axiomCookieOk === false
         ? `<span style="color:#ff7043;font-size:11px" title="Axiom cookie expired — update AXIOM_COOKIE">N/A</span>`
-        : m.axiom_user_count != null && m.axiom_user_count > 0
-          ? `<span style="color:#7eb8f7;font-weight:600">${m.axiom_user_count}</span>`
-          : `<span style="color:#444">—</span>`
+        : m.axiom_user_count == null
+          ? `<span style="color:#333;font-size:10px" title="Fetching…">…</span>`
+          : m.axiom_user_count > 0
+            ? `<span style="color:#7eb8f7;font-weight:600">${m.axiom_user_count}</span>`
+            : `<span style="color:#333;font-size:11px" title="0 viewers on Axiom">0</span>`
       const twLine = m.twitterHandle
         ? `<br><a href="https://x.com/${escH(m.twitterHandle)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);font-size:10px;text-decoration:none">🐦 @${escH(m.twitterHandle)}${m.communityFollowers ? ` <span style="color:var(--text-dim)">· ${fmtFollowers(m.communityFollowers)}</span>` : ''}</a>`
         : ''

@@ -102,8 +102,8 @@ export class AxiomPoller extends EventEmitter {
       intervalMs
     )
 
-    // Movers cycle — delay first run by 15s to let MoversPoller warm up
-    setTimeout(() => this.pollMovers().catch(err => console.error('[Axiom] Initial movers poll error:', err)), 15_000)
+    // Movers cycle — delay first run by 40s to let MoversPoller warm up
+    setTimeout(() => this.pollMovers().catch(err => console.error('[Axiom] Initial movers poll error:', err)), 40_000)
     this.moversTimer = setInterval(
       () => this.pollMovers().catch(err => console.error('[Axiom] Movers poll error:', err)),
       MOVER_POLL_INTERVAL_MS
@@ -181,20 +181,27 @@ export class AxiomPoller extends EventEmitter {
   private async pollMovers(): Promise<void> {
     if (!this.getMoversSource) return
     const movers = this.getMoversSource()
-    if (movers.length === 0) return
+    if (movers.length === 0) {
+      console.log('[Axiom] Movers poll skipped — no movers yet (will retry next cycle)')
+      return
+    }
 
     // Sort by market cap descending, take top MAX_MOVERS_TO_POLL
     const sorted = [...movers]
       .sort((a, b) => b.marketCap - a.marketCap)
       .slice(0, MAX_MOVERS_TO_POLL)
 
+    console.log(`[Axiom] Polling viewer counts for ${sorted.length} movers…`)
+
     let fetched = 0
+    let withViewers = 0
     for (const mover of sorted) {
       try {
         const info = await this.fetchPairInfo(mover.mint)
         if (info) {
           this.moversViewerCounts.set(mover.mint, info.userCount)
           fetched++
+          if (info.userCount > 0) withViewers++
         }
       } catch {
         // Skip individual failures silently
@@ -202,7 +209,7 @@ export class AxiomPoller extends EventEmitter {
       await sleep(MOVER_REQUEST_DELAY_MS)
     }
 
-    console.log(`[Axiom] Movers viewer counts refreshed: ${fetched}/${sorted.length}`)
+    console.log(`[Axiom] Movers done: ${fetched}/${sorted.length} responded, ${withViewers} have active viewers`)
   }
 
   // ── Core fetch ────────────────────────────────────────────────────────────
