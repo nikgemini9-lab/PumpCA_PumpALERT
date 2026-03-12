@@ -101,6 +101,14 @@ export class OgHunterRadar {
     const ogMcStr = og.marketCapUsd > 0 ? `$${fmtNum(og.marketCapUsd)}` : 'unknown MC'
     const migratedMcStr = `$${fmtNum(migratedMc)}`
 
+    // Gap ratio: how much bigger is the runner than the OG? Bigger gap = more OG upside
+    const gapRatio = migratedMc > 0 && og.marketCapUsd > 0
+      ? Math.round(migratedMc / og.marketCapUsd)
+      : null
+    const gapLine = gapRatio !== null
+      ? `📊 Gap: Runner is <b>${gapRatio}x</b> OG's MC${gapRatio >= 10 ? ' — OG barely touched 🔥' : gapRatio >= 3 ? ' — solid upside' : ' — running close'}`
+      : ''
+
     const buyLine = buyActivity.buyCount > 0
       ? `🛒 OG recent buys (3h): <b>${buyActivity.buyCount}</b>  ·  <b>$${fmtNum(buyActivity.buyVolumeUsd)}</b>`
       : `🛒 OG recent buys (3h): <b>none yet</b>`
@@ -120,6 +128,7 @@ export class OgHunterRadar {
       `<code>${og.mint}</code>`,
       `⏳ Age: <b>${fmtAge(og.ageHours)}</b>`,
       `💎 MC: <b>${ogMcStr}</b>  ← still cheap`,
+      gapLine,
       buyLine,
       ``,
       `⚡ Community attention may rotate from the new token to this OG.`,

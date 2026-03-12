@@ -14,7 +14,7 @@
 import axios from 'axios'
 import TelegramBot from 'node-telegram-bot-api'
 import { config } from './config'
-import { initDatabase, getActiveTokens } from './database'
+import { initDatabase, getActiveTokens, getOgRadarHits } from './database'
 import { SolanaMonitor } from './monitor'
 import { DexScreenerPoller } from './poller'
 import { AlertManager } from './alerts'
@@ -123,37 +123,64 @@ async function main(): Promise<void> {
   // Wire dormant coin Telegram alerts
   moversPoller.on('dormant', (mover: MoverEntry) => {
     const chatIds = config.telegram.users.map(u => u.chatId).filter(Boolean)
-    const ageDays = Math.floor(mover.ageHours / 24)
-    const ageStr  = ageDays >= 365 ? `${Math.floor(ageDays / 365)}y ${ageDays % 365}d`
-                  : ageDays >= 30  ? `${Math.floor(ageDays / 30)}mo`
-                  : `${ageDays}d`
+    if (chatIds.length === 0) return
 
-    const fmtPct = (n: number | null) => n != null ? `${n > 0 ? '+' : ''}${n.toFixed(1)}%` : '—'
-    const mcStr  = mover.marketCap >= 1e6 ? `$${(mover.marketCap / 1e6).toFixed(2)}M`
-                 : mover.marketCap >= 1e3 ? `$${(mover.marketCap / 1e3).toFixed(1)}K`
-                 : `$${mover.marketCap.toFixed(0)}`
-    const lastTraded = Math.floor((Date.now() - mover.lastTradeAt) / 60_000)
-    const lastStr = lastTraded < 60 ? `${lastTraded}m ago` : `${Math.floor(lastTraded / 60)}h ago`
+    ;(async () => {
+      const ageDays = Math.floor(mover.ageHours / 24)
+      const ageStr  = ageDays >= 365 ? `${Math.floor(ageDays / 365)}y ${ageDays % 365}d`
+                    : ageDays >= 30  ? `${Math.floor(ageDays / 30)}mo`
+                    : `${ageDays}d`
 
-    // Fetch Axiom viewer count for this dormant coin — adds conviction signal
-    axiomPoller.fetchViewerCount(mover.mint).then(viewerCount => {
-      const viewerLine = viewerCount != null && viewerCount > 0
-        ? `\n👀 Axiom:  <b>${viewerCount} watching</b>`
-        : ''
+      const fmtPct = (n: number | null) => n != null ? `${n > 0 ? '+' : ''}${n.toFixed(1)}%` : '—'
+      const fmtMc  = (n: number) => n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M`
+                   : n >= 1e3   ? `$${(n / 1e3).toFixed(1)}K`
+                   : `$${n.toFixed(0)}`
+      const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+      const lastTraded = Math.floor((Date.now() - mover.lastTradeAt) / 60_000)
+      const lastStr = lastTraded < 60 ? `${lastTraded}m ago` : `${Math.floor(lastTraded / 60)}h ago`
+
+      // Check for a recent runner that caused this dormant coin to move (OG radar hits, last 6h)
+      let runnerLine = ''
+      try {
+        const SIX_HOURS = 6 * 60 * 60_000
+        const ogHits = await getOgRadarHits(50)
+        const hit = ogHits.find(h => h.ogMint === mover.mint && Date.now() - h.detectedAt < SIX_HOURS)
+        if (hit) {
+          // Prefer live MC from movers if the runner is still in the list
+          const runnerMover = moversPoller.getMovers().find(r => r.mint === hit.migratedMint)
+          const runnerMc = runnerMover?.marketCap ?? hit.migratedMc
+          const gapRatio = runnerMc > 0 && mover.marketCap > 0 ? Math.round(runnerMc / mover.marketCap) : null
+          const gapStr = gapRatio ? ` (${gapRatio}x OG MC)` : ''
+          runnerLine = `\n🏃 Runner: <b>${escHtml(hit.migratedName)}</b> @ <b>${fmtMc(runnerMc)}</b>${gapStr}`
+        }
+      } catch { /* non-fatal — proceed without runner line */ }
+
+      // Fetch Axiom viewer count
+      let viewerLine = ''
+      try {
+        const viewerCount = await axiomPoller.fetchViewerCount(mover.mint)
+        if (viewerCount != null && viewerCount > 0) {
+          viewerLine = `\n👀 Axiom:  <b>${viewerCount} watching</b>`
+        }
+      } catch { /* non-fatal */ }
+
+      const contextLine = runnerLine
+        ? `⚡ OG pumping — runner detected above.`
+        : `⚡ Old coin suddenly moving — possible OG situation.`
 
       const text = [
         `👴 <b>DORMANT COIN WOKE UP!</b>`,
         ``,
-        `<b>${mover.name}</b>  $${mover.symbol}`,
+        `<b>${escHtml(mover.name)}</b>  $${escHtml(mover.symbol)}`,
         `<code>${mover.mint}</code>`,
         ``,
         `⏳ Age: <b>${ageStr}</b>`,
-        `💎 MC: <b>${mcStr}</b>`,
+        `💎 MC: <b>${fmtMc(mover.marketCap)}</b>`,
         `📈 1H: <b>${fmtPct(mover.change1h)}</b>  |  24H: <b>${fmtPct(mover.change24h)}</b>`,
-        `⏱ Last traded: <b>${lastStr}</b>${viewerLine}`,
+        `⏱ Last traded: <b>${lastStr}</b>${viewerLine}${runnerLine}`,
         ``,
-        `⚡ Old coin suddenly moving — possible OG situation.`,
-        `Check OG Hunter Radar for related new coins.`,
+        contextLine,
         ``,
         [
           `<a href="https://axiom.trade/t/${mover.mint}">📊 Axiom</a>`,
@@ -166,34 +193,7 @@ async function main(): Promise<void> {
         bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true })
           .catch(err => console.error('[Movers] Telegram error:', err?.message))
       }
-    }).catch(() => {
-      // Axiom fetch failed — send alert without viewer count
-      const text = [
-        `👴 <b>DORMANT COIN WOKE UP!</b>`,
-        ``,
-        `<b>${mover.name}</b>  $${mover.symbol}`,
-        `<code>${mover.mint}</code>`,
-        ``,
-        `⏳ Age: <b>${ageStr}</b>`,
-        `💎 MC: <b>${mcStr}</b>`,
-        `📈 1H: <b>${fmtPct(mover.change1h)}</b>  |  24H: <b>${fmtPct(mover.change24h)}</b>`,
-        `⏱ Last traded: <b>${lastStr}</b>`,
-        ``,
-        `⚡ Old coin suddenly moving — possible OG situation.`,
-        `Check OG Hunter Radar for related new coins.`,
-        ``,
-        [
-          `<a href="https://axiom.trade/t/${mover.mint}">📊 Axiom</a>`,
-          `<a href="https://dexscreener.com/solana/${mover.mint}">📈 DexScr</a>`,
-          `<a href="https://pump.fun/${mover.mint}">🎱 pump.fun</a>`,
-        ].join('  |  '),
-      ].join('\n')
-
-      for (const chatId of chatIds) {
-        bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true })
-          .catch(err => console.error('[Movers] Telegram error:', err?.message))
-      }
-    })
+    })().catch(err => console.error('[Movers] Dormant alert error:', err))
   })
 
   // Start pollers
