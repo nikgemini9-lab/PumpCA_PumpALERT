@@ -321,18 +321,24 @@ export class AxiomPoller extends EventEmitter {
         pairAddress,
       }
     } catch (err) {
-      const status = (err as AxiosError)?.response?.status
-      if (status === 401 || status === 403) {
+      const axErr = err as AxiosError
+      const status = axErr?.response?.status
+      const body = axErr?.response?.data as Record<string, any> | undefined
+      const isAuthError =
+        status === 401 ||
+        status === 403 ||
+        (status === 502 && typeof body?.error === 'string' && body.error.toLowerCase().includes('token'))
+      if (isAuthError) {
         this.consecutiveAuthFails++
         if (this.consecutiveAuthFails >= AUTH_FAIL_THRESHOLD) {
           if (this.cookieOk) {
-            console.warn(`[Axiom] Cookie appears expired (${this.consecutiveAuthFails} auth failures) — update AXIOM_COOKIE`)
+            console.warn(`[Axiom] Cookie appears expired (${this.consecutiveAuthFails} auth failures, last status=${status}) — update AXIOM_COOKIE`)
           }
           this.cookieOk = false
         }
       } else {
         // Non-auth error (404, timeout, etc.) — don't penalise cookie health
-        const msg = (err as AxiosError)?.message ?? 'unknown'
+        const msg = axErr?.message ?? 'unknown'
         console.log(`[Axiom] fetchPairInfo failed for ${mint.slice(0, 8)}… status=${status ?? 'N/A'} err=${msg}`)
         this.consecutiveAuthFails = 0
       }
