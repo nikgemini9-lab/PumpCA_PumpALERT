@@ -166,8 +166,11 @@ export class AxiomPoller extends EventEmitter {
         const res = await axios.get(url, {
           headers: {
             Cookie: config.axiom.cookie,
-            'User-Agent': 'Mozilla/5.0 (compatible; PumpAlert/1.0)',
-            Accept: 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept: 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            Origin: 'https://axiom.trade',
+            Referer: 'https://axiom.trade/',
           },
           timeout: 8_000,
           validateStatus: () => true,
@@ -284,8 +287,11 @@ export class AxiomPoller extends EventEmitter {
       const res = await axios.get<Record<string, any>>(url, {
         headers: {
           Cookie: config.axiom.cookie,
-          'User-Agent': 'Mozilla/5.0 (compatible; PumpAlert/1.0)',
-          Accept: 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          Accept: 'application/json, text/plain, */*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          Origin: 'https://axiom.trade',
+          Referer: 'https://axiom.trade/',
         },
         timeout: 8_000,
         validateStatus: s => s === 200,
@@ -326,6 +332,8 @@ export class AxiomPoller extends EventEmitter {
         }
       } else {
         // Non-auth error (404, timeout, etc.) — don't penalise cookie health
+        const msg = (err as AxiosError)?.message ?? 'unknown'
+        console.log(`[Axiom] fetchPairInfo failed for ${mint.slice(0, 8)}… status=${status ?? 'N/A'} err=${msg}`)
         this.consecutiveAuthFails = 0
       }
       return null
