@@ -71,6 +71,9 @@ export const config = {
   birdeye: {
     apiKey: optional('BIRDEYE_API_KEY', ''),
   },
+  cmc: {
+    apiKey: optional('CMC_API_KEY', ''),
+  },
   appUrl: optional('APP_URL', '').replace(/\/$/, ''), // e.g. https://pumpca-pumpalert.onrender.com
   port: optionalNumber('PORT', 3000),
 }

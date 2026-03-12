@@ -17,9 +17,11 @@ import { DexScreenerPair } from './types'
 import { config } from './config'
 import * as db from './database'
 
-const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/tokens'
-// Birdeye multi-price API — replaces Jupiter (which now requires a paid key)
+const DEXSCREENER_API   = 'https://api.dexscreener.com/latest/dex/tokens'
+// Birdeye multi-price API — good coverage for Solana tokens
 const BIRDEYE_PRICE_API = 'https://public-api.birdeye.so/defi/multi_price'
+// CoinMarketCap — for established tokens listed on CMC (by contract address)
+const CMC_QUOTES_API    = 'https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest'
 // Pump.fun frontend API — covers pre-graduation bonding curve tokens, no key needed
 const PUMPFUN_API = 'https://frontend-api.pump.fun/coins'
 const PUMPFUN_TOTAL_SUPPLY = 1_000_000_000 // all pump.fun tokens launch with 1B supply
@@ -114,12 +116,14 @@ export class DexScreenerPoller extends EventEmitter {
       }
     }
 
-    // Birdeye fallback: fetch prices for tokens that have no DexScreener pair
+    // Fallback chain for tokens not on DexScreener:
+    //   CMC (established listed tokens) → Birdeye (Solana tokens) → pump.fun (pre-graduation)
     const missingMints = mints.filter(m => !foundOnDex.has(m))
     if (missingMints.length > 0) {
-      const foundOnBirdeye = await this.fetchBirdeyePrices(missingMints)
-      // Pump.fun fallback: for tokens still missing after Birdeye (pre-graduation bonding curve)
-      const stillMissing = missingMints.filter(m => !foundOnBirdeye.has(m))
+      const foundOnCmc     = await this.fetchCmcPrices(missingMints)
+      const afterCmc       = missingMints.filter(m => !foundOnCmc.has(m))
+      const foundOnBirdeye = afterCmc.length > 0 ? await this.fetchBirdeyePrices(afterCmc) : new Set<string>()
+      const stillMissing   = afterCmc.filter(m => !foundOnBirdeye.has(m))
       if (stillMissing.length > 0) {
         await this.fetchPumpFunPrices(stillMissing)
       }
@@ -171,6 +175,45 @@ export class DexScreenerPoller extends EventEmitter {
         console.warn(`[Social] Twitter widget fetch failed: ${err?.message ?? err}`)
       }
     }
+  }
+
+  /**
+   * CoinMarketCap v2 quotes by contract address — good for established tokens
+   * listed on CMC. Pump.fun tokens won't be here, but watchlist tokens might be.
+   * 1 credit per 100 data points → very efficient with batching.
+   * Returns the set of mints that CMC returned a price for.
+   */
+  private async fetchCmcPrices(mints: string[]): Promise<Set<string>> {
+    const found = new Set<string>()
+    if (!config.cmc.apiKey) return found
+    // CMC accepts up to 100 addresses per call
+    const batches = chunk(mints, 100)
+    for (const batch of batches) {
+      try {
+        const res = await axios.get<{ data: Record<string, { quote: { USD: { price: number } } }> }>(
+          CMC_QUOTES_API,
+          {
+            params: { address: batch.join(','), convert: 'USD' },
+            headers: { 'X-CMC_PRO_API_KEY': config.cmc.apiKey },
+            timeout: 8_000,
+          }
+        )
+        const data = res.data?.data ?? {}
+        let updated = 0
+        for (const [mint, info] of Object.entries(data)) {
+          const price = info?.quote?.USD?.price
+          if (!price || price <= 0) continue
+          await db.updateTokenMetadata(mint, { priceUsd: String(price) })
+          found.add(mint)
+          updated++
+        }
+        if (updated > 0) console.log(`[Poller] CMC: prices updated for ${updated} tokens`)
+        this.lastPollAt = Date.now()
+      } catch (err: any) {
+        console.warn(`[Poller] CMC price fallback error: ${err?.message ?? err}`)
+      }
+    }
+    return found
   }
 
   /**

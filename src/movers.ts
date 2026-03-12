@@ -38,9 +38,9 @@ const PUMP_PROGRAM_STR = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
 const PUMP_PROGRAM     = new PublicKey(PUMP_PROGRAM_STR)
 const WSOL             = 'So11111111111111111111111111111111111111112'
 
-const HELIUS_API    = 'https://api.helius.xyz/v0'
-const DEX_API       = 'https://api.dexscreener.com/latest/dex/tokens'
-const COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price'
+const HELIUS_API = 'https://api.helius.xyz/v0'
+const DEX_API    = 'https://api.dexscreener.com/latest/dex/tokens'
+const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 
 const POLL_MS          = 15 * 60_000  // 15 minutes (was 5 — saves ~19k credits/day)
 const ENRICH_MS        =  2 * 60_000  // 2 minutes — refresh MC/price for known mints (free)
@@ -116,14 +116,27 @@ export interface MoverEntry {
 let _solPrice = { price: 150, ts: 0 }
 
 async function getSolPrice(): Promise<number> {
-  if (Date.now() - _solPrice.ts < 5 * 60_000) return _solPrice.price
+  // 10-min cache to conserve CMC credits (~4,320 calls/month on free tier)
+  if (Date.now() - _solPrice.ts < 10 * 60_000) return _solPrice.price
   try {
-    const res = await axios.get(
-      `${COINGECKO_API}?ids=solana&vs_currencies=usd`,
-      { timeout: 5_000 }
-    )
-    const p = res.data?.solana?.usd
-    if (p > 0) _solPrice = { price: p, ts: Date.now() }
+    const cmcKey = config.cmc.apiKey
+    if (cmcKey) {
+      const res = await axios.get(CMC_API, {
+        params: { symbol: 'SOL', convert: 'USD' },
+        headers: { 'X-CMC_PRO_API_KEY': cmcKey },
+        timeout: 5_000,
+      })
+      const p = res.data?.data?.SOL?.quote?.USD?.price
+      if (p > 0) _solPrice = { price: p, ts: Date.now() }
+    } else {
+      // Fallback: CoinGecko (no key needed)
+      const res = await axios.get(
+        'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+        { timeout: 5_000 }
+      )
+      const p = res.data?.solana?.usd
+      if (p > 0) _solPrice = { price: p, ts: Date.now() }
+    }
   } catch { /* use cached */ }
   return _solPrice.price
 }
