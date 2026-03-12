@@ -77,6 +77,7 @@ interface DexPairData {
   name:           string
   symbol:         string
   fdv:            number | null
+  pairAddress:    string          // Raydium pool address — used by Axiom for viewer counts
   pairCreatedAt:  number | null   // epoch ms
   priceChange:    { m5?: number; h1?: number; h6?: number; h24?: number } | null
   volume:         { h24?: number } | null
@@ -105,6 +106,7 @@ export interface MoverEntry {
   txns24h:            number | null
   graduated:          boolean
   isDormant:          boolean
+  pairAddress?:       string   // Raydium pool address (graduated only) — used for Axiom viewer counts
   twitterHandle?:     string   // X / Twitter handle (without @)
   communityFollowers?: number  // follower count from widget API
 }
@@ -343,6 +345,7 @@ export class MoversPoller extends EventEmitter {
           : null,
         graduated,
         isDormant,
+        pairAddress:        dex?.pairAddress || undefined,
         twitterHandle:      rec.twitterHandle,
         communityFollowers: rec.communityFollowers,
       }
@@ -476,6 +479,7 @@ export class MoversPoller extends EventEmitter {
               name:           pair.baseToken.name   ?? '',
               symbol:         pair.baseToken.symbol ?? '',
               fdv:            pair.fdv               ?? null,
+              pairAddress:    pair.pairAddress       ?? '',
               pairCreatedAt:  pair.pairCreatedAt     ?? null,
               priceChange:    pair.priceChange        ?? null,
               volume:         pair.volume             ?? null,

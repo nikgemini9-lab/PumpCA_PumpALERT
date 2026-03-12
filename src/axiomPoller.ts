@@ -37,6 +37,12 @@ const VIEWER_ALERT_COOLDOWN_MS = 5 * 60_000
 // Number of consecutive 401/403 responses before marking cookie as dead
 const AUTH_FAIL_THRESHOLD = 3
 
+export interface MoverAxiomData {
+  userCount: number
+  top10Holders: number
+  lpBurned: number
+}
+
 export interface AxiomTokenCache {
   userCount: number
   top10Holders: number
@@ -61,8 +67,8 @@ export class AxiomPoller extends EventEmitter {
   /** Watchlist cache — read by AlertManager to enrich pump alert messages */
   readonly cache: Map<string, AxiomTokenCache> = new Map()
 
-  /** Movers viewer counts — in-memory only, ephemeral */
-  private moversViewerCounts: Map<string, number> = new Map()
+  /** Movers Axiom data — in-memory only, ephemeral */
+  private moversAxiomData: Map<string, MoverAxiomData> = new Map()
 
   // ── Public API ────────────────────────────────────────────────────────────
 
@@ -76,9 +82,14 @@ export class AxiomPoller extends EventEmitter {
     return this.cache.get(mint) ?? null
   }
 
-  /** Viewer count for a mover from the last movers poll cycle */
+  /** Axiom data for a mover (userCount + top10Holders + lpBurned) from last poll cycle */
+  getMoverAxiomData(mint: string): MoverAxiomData | null {
+    return this.moversAxiomData.get(mint) ?? null
+  }
+
+  /** Viewer count for a mover — backwards-compat shortcut */
   getMoverViewerCount(mint: string): number | null {
-    return this.moversViewerCounts.get(mint) ?? null
+    return this.moversAxiomData.get(mint)?.userCount ?? null
   }
 
   /** True while the cookie appears valid; false after 3+ consecutive 401/403s */
@@ -197,9 +208,15 @@ export class AxiomPoller extends EventEmitter {
     let withViewers = 0
     for (const mover of sorted) {
       try {
-        const info = await this.fetchPairInfo(mover.mint)
+        // Graduated tokens: use DexScreener pair address (Raydium pool)
+        // Non-graduated: fall back to bonding curve PDA
+        const info = await this.fetchPairInfo(mover.mint, mover.pairAddress)
         if (info) {
-          this.moversViewerCounts.set(mover.mint, info.userCount)
+          this.moversAxiomData.set(mover.mint, {
+            userCount: info.userCount,
+            top10Holders: info.top10Holders,
+            lpBurned: info.lpBurned,
+          })
           fetched++
           if (info.userCount > 0) withViewers++
         }
@@ -214,8 +231,8 @@ export class AxiomPoller extends EventEmitter {
 
   // ── Core fetch ────────────────────────────────────────────────────────────
 
-  private async fetchPairInfo(mint: string): Promise<AxiomPairInfo | null> {
-    const pairAddress = getBondingCurveAddress(mint).toString()
+  private async fetchPairInfo(mint: string, overridePairAddress?: string): Promise<AxiomPairInfo | null> {
+    const pairAddress = overridePairAddress || getBondingCurveAddress(mint).toString()
     const url = `https://api6.axiom.trade/pair-info?pairAddress=${pairAddress}&v=${Date.now()}`
 
     try {

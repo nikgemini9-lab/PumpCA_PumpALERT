@@ -590,6 +590,8 @@
     .movers-table tr.mover-row:hover { background: var(--bg3); }
     .mover-row.dormant-row { background: #1a1200; }
     .mover-row.dormant-row:hover { background: #221700; }
+    .mover-row.rug-row { background: rgba(255,60,60,0.05); }
+    .mover-row.rug-row:hover { background: rgba(255,60,60,0.09); }
     .mover-rank { color: var(--text-muted); font-weight: 600; min-width: 36px; }
     .mover-coin-cell { min-width: 140px; }
     .mover-coin-name { font-weight: 600; display: flex; align-items: center; gap: 4px; }
@@ -940,6 +942,7 @@
           <button class="mover-tab active" onclick="setMoverFilter('all')">All</button>
           <button class="mover-tab" onclick="setMoverFilter('dormant')">👴 Dormant <span id="dormant-count">0</span></button>
           <button class="mover-tab" onclick="setMoverFilter('gainers')">📈 Gainers</button>
+          <button class="mover-tab" onclick="setMoverFilter('rugs')">🚩 Rugs <span id="rug-count">0</span></button>
         </div>
       </div>
       <div class="movers-table-wrap">
@@ -993,6 +996,7 @@
   let moversLastPollAt = null
   let moversLastError = null
   let axiomCookieOk = null   // null = no axiom cookie configured, true/false = health
+  let rugCount = 0
   let metaData = []
   let metaActiveWindow = '2h'
   let metaTimer = null
@@ -1528,12 +1532,15 @@
         axiomCookieOk = resp.axiom_cookie_ok
       }
 
-      const dormantCount = allMovers.filter(m => m.isDormant).length
+      const dormantCount = allMovers.filter(m => m.isDormant && !m.isRug).length
       document.getElementById('dormant-count')?.setAttribute('textContent', dormantCount)
       const dormantEl = document.getElementById('dormant-count')
       if (dormantEl) dormantEl.textContent = dormantCount
+      rugCount = allMovers.filter(m => m.isRug).length
+      const rugEl = document.getElementById('rug-count')
+      if (rugEl) rugEl.textContent = rugCount
       const totalEl = document.getElementById('movers-badge')
-      if (totalEl) totalEl.textContent = allMovers.length
+      if (totalEl) totalEl.textContent = allMovers.filter(m => !m.isRug).length
 
       const updEl = document.getElementById('movers-updated')
       if (updEl) {
@@ -1612,7 +1619,7 @@
     }
 
     tbody.innerHTML = list.map((m, i) => {
-      const dormantClass = m.isDormant ? ' dormant-row' : ''
+      const dormantClass = m.isDormant ? ' dormant-row' : m.isRug ? ' rug-row' : ''
       const dormantBadge = m.isDormant ? ' <span style="font-size:11px">👴</span>' : ''
       const gradBadge = m.graduated ? ' <span style="color:var(--green);font-size:10px">✓</span>' : ''
       const ageH = m.ageHours
@@ -1625,13 +1632,16 @@
       const dex  = `https://dexscreener.com/solana/${m.mint}`
       const axiom = `https://axiom.trade/t/${m.mint}`
       const mintShort = m.mint.slice(0, 6) + '…' + m.mint.slice(-4)
+      const top10Str = m.axiom_top10 != null
+        ? ` <span style="color:${m.axiom_top10 > 90 ? '#ff5252' : '#666'};font-size:10px" title="Top 10 holders: ${m.axiom_top10.toFixed(0)}%">${m.axiom_top10.toFixed(0)}%</span>`
+        : ''
       const viewersHtml = axiomCookieOk === false
         ? `<span style="color:#ff7043;font-size:11px" title="Axiom cookie expired — update AXIOM_COOKIE">N/A</span>`
         : m.axiom_user_count == null
-          ? `<span style="color:#333;font-size:10px" title="Fetching…">…</span>`
+          ? `<span style="color:#333;font-size:10px" title="Fetching…">…</span>${top10Str}`
           : m.axiom_user_count > 0
-            ? `<span style="color:#7eb8f7;font-weight:600">${m.axiom_user_count}</span>`
-            : `<span style="color:#333;font-size:11px" title="0 viewers on Axiom">0</span>`
+            ? `<span style="color:#7eb8f7;font-weight:600">${m.axiom_user_count}</span>${top10Str}`
+            : `<span style="color:#333;font-size:11px" title="0 viewers on Axiom">0</span>${top10Str}`
       const twLine = m.twitterHandle
         ? `<br><a href="https://x.com/${escH(m.twitterHandle)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);font-size:10px;text-decoration:none">🐦 @${escH(m.twitterHandle)}${m.communityFollowers ? ` <span style="color:var(--text-dim)">· ${fmtFollowers(m.communityFollowers)}</span>` : ''}</a>`
         : ''

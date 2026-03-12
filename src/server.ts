@@ -293,28 +293,49 @@ export function startServer(
   })
 
   // ── GET /api/movers ───────────────────────────────────────────────────────
+  // Rug detection thresholds
+  const RUG_TOP10_THRESHOLD = 90   // top10Holders > 90% = whale concentration
+  const RUG_MIN_TXNS        = 10   // txns24h < 10 = almost no real trading (DexScreener only)
+  const RUG_MIN_VOLUME      = 100  // volume24h < $100 = micro volume (DexScreener only)
+
   app.get('/api/movers', (req: Request, res: Response) => {
     const filter = req.query.filter as string | undefined
     const status = moversPoller.getStatus()
-    let movers = moversPoller.getMovers()
+    const allMovers = moversPoller.getMovers()
 
-    if (filter === 'dormant') movers = movers.filter(m => m.isDormant)
-    else if (filter === 'gainers') movers = movers.filter(m => (m.change1h ?? 0) > 0)
+    const cookieOk = axiomPoller ? axiomPoller.isCookieOk() : null
 
-    // Default sort: biggest absolute 1h move first, then by 24h
+    // Enrich with Axiom data + compute isRug flag
+    const enriched = allMovers.map(m => {
+      const axiom = axiomPoller?.getMoverAxiomData(m.mint) ?? null
+      const isRug =
+        (axiom !== null && axiom.top10Holders > RUG_TOP10_THRESHOLD) ||
+        (m.txns24h !== null && m.txns24h < RUG_MIN_TXNS) ||
+        (m.volume24h !== null && m.volume24h < RUG_MIN_VOLUME)
+      return {
+        ...m,
+        axiom_user_count: axiom?.userCount ?? null,
+        axiom_top10:      axiom?.top10Holders ?? null,
+        axiom_lp_burned:  axiom?.lpBurned ?? null,
+        isRug,
+      }
+    })
+
+    let movers = enriched
+    if (filter === 'dormant') movers = enriched.filter(m => m.isDormant && !m.isRug)
+    else if (filter === 'gainers') movers = enriched.filter(m => (m.change1h ?? 0) > 0 && !m.isRug)
+    else if (filter === 'rugs') movers = enriched.filter(m => m.isRug)
+    else movers = enriched.filter(m => !m.isRug)  // default: hide rugs
+
+    // Default sort: biggest absolute 1h move first
     movers.sort((a, b) => {
       const aScore = Math.abs(a.change1h ?? a.change24h ?? 0)
       const bScore = Math.abs(b.change1h ?? b.change24h ?? 0)
       return bScore - aScore
     })
 
-    const cookieOk = axiomPoller ? axiomPoller.isCookieOk() : null
-
     res.json({
-      movers: movers.map(m => ({
-        ...m,
-        axiom_user_count: axiomPoller?.getMoverViewerCount(m.mint) ?? null,
-      })),
+      movers,
       axiom_cookie_ok: cookieOk,
       lastPollAt: status.lastPollAt,
       lastError: status.lastError,
