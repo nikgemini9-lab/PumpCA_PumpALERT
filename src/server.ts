@@ -365,14 +365,7 @@ export function startServer(
     const pairAddress = mover?.pairAddress ?? null
 
     const result = await axiomPoller.debugFetchPairInfo(mint, pairAddress ?? undefined)
-    res.json({
-      mint,
-      pairAddressUsed: result?.pairAddressUsed ?? null,
-      pairAddressSource: pairAddress ? 'dexscreener (raydium pool)' : 'bonding curve PDA (derived)',
-      cookieOk: axiomPoller.isCookieOk(),
-      axiomResponse: result?.data ?? null,
-      error: result?.error ?? null,
-    })
+    res.json({ mint, cookieOk: axiomPoller.isCookieOk(), dexscreenerPairAddress: pairAddress, ...result })
   })
 
   // ── GET /api/users ────────────────────────────────────────────────────────
