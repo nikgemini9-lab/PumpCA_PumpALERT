@@ -18,8 +18,8 @@ import { config } from './config'
 import * as db from './database'
 
 const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/tokens'
-// Jupiter v2 price API — new domain (price.jup.ag was deprecated and DNS dropped)
-const JUPITER_PRICE_API = 'https://api.jup.ag/price/v2'
+// Birdeye multi-price API — replaces Jupiter (which now requires a paid key)
+const BIRDEYE_PRICE_API = 'https://public-api.birdeye.so/defi/multi_price'
 // Pump.fun frontend API — covers pre-graduation bonding curve tokens, no key needed
 const PUMPFUN_API = 'https://frontend-api.pump.fun/coins'
 const PUMPFUN_TOTAL_SUPPLY = 1_000_000_000 // all pump.fun tokens launch with 1B supply
@@ -114,12 +114,12 @@ export class DexScreenerPoller extends EventEmitter {
       }
     }
 
-    // Jupiter fallback: fetch prices for tokens that have no DexScreener pair
+    // Birdeye fallback: fetch prices for tokens that have no DexScreener pair
     const missingMints = mints.filter(m => !foundOnDex.has(m))
     if (missingMints.length > 0) {
-      const foundOnJupiter = await this.fetchJupiterPrices(missingMints)
-      // Pump.fun fallback: for tokens still missing after Jupiter (pre-graduation bonding curve)
-      const stillMissing = missingMints.filter(m => !foundOnJupiter.has(m))
+      const foundOnBirdeye = await this.fetchBirdeyePrices(missingMints)
+      // Pump.fun fallback: for tokens still missing after Birdeye (pre-graduation bonding curve)
+      const stillMissing = missingMints.filter(m => !foundOnBirdeye.has(m))
       if (stillMissing.length > 0) {
         await this.fetchPumpFunPrices(stillMissing)
       }
@@ -174,33 +174,44 @@ export class DexScreenerPoller extends EventEmitter {
   }
 
   /**
-   * Jupiter Price API covers tokens with no DexScreener listing (Token-2022,
-   * newly launched, low-liquidity). Free, no API key needed.
-   * Returns the set of mints that Jupiter returned a price for.
+   * Birdeye multi-price API — replaces Jupiter (which now requires a paid key).
+   * Batches up to 100 mints per request. Requires BIRDEYE_API_KEY env var.
+   * Response: { data: { MINT: { value: number, ... } }, success: true }
+   * Returns the set of mints that Birdeye returned a price for.
    */
-  private async fetchJupiterPrices(mints: string[]): Promise<Set<string>> {
+  private async fetchBirdeyePrices(mints: string[]): Promise<Set<string>> {
     const found = new Set<string>()
+    if (!config.birdeye.apiKey) {
+      console.warn('[Poller] BIRDEYE_API_KEY not set — skipping Birdeye price fallback')
+      return found
+    }
     const batches = chunk(mints, 100)
     for (const batch of batches) {
       try {
-        // v2 response: { data: { MINT: { id, type, price: "string" } } }
-        const res = await axios.get<{ data: Record<string, { id: string; price: string | number }> }>(
-          `${JUPITER_PRICE_API}?ids=${batch.join(',')}`,
-          { timeout: 8_000, headers: { 'User-Agent': 'PumpAlert/1.0' } }
+        const res = await axios.get<{ data: Record<string, { value: number }>, success: boolean }>(
+          `${BIRDEYE_PRICE_API}?list_address=${batch.join(',')}`,
+          {
+            timeout: 8_000,
+            headers: {
+              'X-API-KEY': config.birdeye.apiKey,
+              'x-chain': 'solana',
+            },
+          }
         )
-        const data = res.data?.data ?? {}
+        if (!res.data?.success) continue
+        const data = res.data.data ?? {}
         let updated = 0
         for (const [mint, info] of Object.entries(data)) {
-          const price = parseFloat(String(info?.price ?? '0'))
+          const price = info?.value
           if (!price || price === 0) continue
           await db.updateTokenMetadata(mint, { priceUsd: String(price) })
           found.add(mint)
           updated++
         }
-        if (updated > 0) console.log(`[Poller] Jupiter: prices updated for ${updated} tokens`)
+        if (updated > 0) console.log(`[Poller] Birdeye: prices updated for ${updated} tokens`)
         this.lastPollAt = Date.now()
       } catch (err: any) {
-        console.warn(`[Poller] Jupiter price fallback error: ${err?.message ?? err}`)
+        console.warn(`[Poller] Birdeye price fallback error: ${err?.message ?? err}`)
       }
     }
     return found

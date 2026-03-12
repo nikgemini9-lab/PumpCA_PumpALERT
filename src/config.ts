@@ -68,6 +68,9 @@ export const config = {
     viewerCountAlert: optionalNumber('VIEWER_COUNT_ALERT', 50),
     pollIntervalSeconds: optionalNumber('AXIOM_POLL_INTERVAL_SECONDS', 30),
   },
+  birdeye: {
+    apiKey: optional('BIRDEYE_API_KEY', ''),
+  },
   appUrl: optional('APP_URL', '').replace(/\/$/, ''), // e.g. https://pumpca-pumpalert.onrender.com
   port: optionalNumber('PORT', 3000),
 }

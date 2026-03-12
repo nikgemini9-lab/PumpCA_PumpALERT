@@ -38,9 +38,9 @@ const PUMP_PROGRAM_STR = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
 const PUMP_PROGRAM     = new PublicKey(PUMP_PROGRAM_STR)
 const WSOL             = 'So11111111111111111111111111111111111111112'
 
-const HELIUS_API  = 'https://api.helius.xyz/v0'
-const DEX_API     = 'https://api.dexscreener.com/latest/dex/tokens'
-const JUPITER_API = 'https://api.jup.ag/price/v2'
+const HELIUS_API    = 'https://api.helius.xyz/v0'
+const DEX_API       = 'https://api.dexscreener.com/latest/dex/tokens'
+const COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price'
 
 const POLL_MS          = 15 * 60_000  // 15 minutes (was 5 — saves ~19k credits/day)
 const ENRICH_MS        =  2 * 60_000  // 2 minutes — refresh MC/price for known mints (free)
@@ -118,8 +118,11 @@ let _solPrice = { price: 150, ts: 0 }
 async function getSolPrice(): Promise<number> {
   if (Date.now() - _solPrice.ts < 5 * 60_000) return _solPrice.price
   try {
-    const res = await axios.get(`${JUPITER_API}?ids=${WSOL}`, { timeout: 5_000 })
-    const p = parseFloat(String(res.data?.data?.[WSOL]?.price ?? ''))
+    const res = await axios.get(
+      `${COINGECKO_API}?ids=solana&vs_currencies=usd`,
+      { timeout: 5_000 }
+    )
+    const p = res.data?.solana?.usd
     if (p > 0) _solPrice = { price: p, ts: Date.now() }
   } catch { /* use cached */ }
   return _solPrice.price
