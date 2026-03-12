@@ -164,6 +164,8 @@ export interface DormantWakeup {
   runnerMint: string | null
   runnerName: string | null
   detectedAt: number
+  athMc: number | null
+  athAt: number | null
 }
 
 export interface OgRadarHit {

@@ -14,7 +14,7 @@
 import axios from 'axios'
 import TelegramBot from 'node-telegram-bot-api'
 import { config } from './config'
-import { initDatabase, getActiveTokens, getOgRadarHits, addDormantWakeup } from './database'
+import { initDatabase, getActiveTokens, getOgRadarHits, addDormantWakeup, getDormantWakeups, updateDormantWakeupAth } from './database'
 import { SolanaMonitor } from './monitor'
 import { DexScreenerPoller } from './poller'
 import { AlertManager } from './alerts'
@@ -218,6 +218,32 @@ async function main(): Promise<void> {
   moversPoller.start()
   ogMcTracker.start()
   axiomPoller.start()
+
+  // Periodic ATH updater for dormant wakeups — every 2 minutes
+  // Checks live MC from movers cache / watchlist and updates ath_mc if price peaked higher
+  setInterval(async () => {
+    try {
+      const wakeups = await getDormantWakeups(168) // last 7 days
+      if (wakeups.length === 0) return
+      const movers = moversPoller.getMovers()
+      const watchlist = await getActiveTokens()
+      for (const w of wakeups) {
+        const mover = movers.find(m => m.mint === w.mint)
+        let currentMc: number | null = mover?.marketCap ?? null
+        if (currentMc == null) {
+          const tok = watchlist.find(t => t.mint === w.mint)
+          if (tok?.marketCap) currentMc = tok.marketCap
+        }
+        if (currentMc == null) continue
+        const storedAth = w.athMc ?? w.marketCap
+        if (currentMc > storedAth) {
+          await updateDormantWakeupAth(w.id, currentMc, Date.now())
+        }
+      }
+    } catch (err) {
+      console.error('[AthUpdater] Error updating dormant wakeup ATH:', err)
+    }
+  }, 2 * 60_000)
 
   // Start HTTP server + dashboard
   startServer(getStatus, monitor, walletPoller, moversPoller, axiomPoller)

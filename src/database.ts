@@ -115,6 +115,8 @@ export async function initDatabase(): Promise<void> {
   await migrateColumn('tokens', 'axiom_dev_funded_sol', 'REAL')
   await migrateColumn('tokens', 'axiom_updated_at', 'INTEGER')
   await migrateColumn('tokens', 'price_updated_at', 'INTEGER')
+  await migrateColumn('dormant_wakeups', 'ath_mc', 'REAL')
+  await migrateColumn('dormant_wakeups', 'ath_at', 'INTEGER')
 }
 
 async function migrateColumn(table: string, column: string, type: string): Promise<void> {
@@ -557,17 +559,25 @@ export async function addDormantWakeup(w: {
   runnerMint?: string | null
   runnerName?: string | null
 }): Promise<void> {
+  const now = Date.now()
   await client.execute({
     sql: `INSERT INTO dormant_wakeups
             (mint, name, symbol, market_cap, age_hours, change_1h, change_6h, change_24h,
-             runner_mint, runner_name, detected_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             runner_mint, runner_name, detected_at, ath_mc, ath_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       w.mint, w.name, w.symbol, w.marketCap, w.ageHours,
       w.change1h ?? null, w.change6h ?? null, w.change24h ?? null,
       w.runnerMint ?? null, w.runnerName ?? null,
-      Date.now(),
+      now, w.marketCap, now,
     ],
+  })
+}
+
+export async function updateDormantWakeupAth(id: number, athMc: number, athAt: number): Promise<void> {
+  await client.execute({
+    sql: 'UPDATE dormant_wakeups SET ath_mc = ?, ath_at = ? WHERE id = ?',
+    args: [athMc, athAt, id],
   })
 }
 
@@ -590,6 +600,8 @@ export async function getDormantWakeups(hours = 24, limit = 100): Promise<Dorman
     runnerMint:  r.runner_mint as string | null,
     runnerName:  r.runner_name as string | null,
     detectedAt:  Number(r.detected_at),
+    athMc:       r.ath_mc != null ? Number(r.ath_mc) : null,
+    athAt:       r.ath_at != null ? Number(r.ath_at) : null,
   }))
 }
 

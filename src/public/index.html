@@ -998,10 +998,11 @@
               <th style="text-align:right;padding:4px 8px;font-weight:500">6H%</th>
               <th style="text-align:right;padding:4px 8px;font-weight:500">24H%</th>
               <th style="text-align:left;padding:4px 8px;font-weight:500">RUNNER</th>
+              <th style="text-align:right;padding:4px 8px;font-weight:500">ATH</th>
             </tr>
           </thead>
           <tbody id="dormant-history-tbody">
-            <tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text-dim)">Loading…</td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text-dim)">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1633,7 +1634,7 @@
       const wakeups = data.wakeups || []
       countEl.textContent = `${wakeups.length} wakeup${wakeups.length !== 1 ? 's' : ''}`
       if (wakeups.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text-dim)">No dormant wakeups in the last ${hours}h</td></tr>`
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text-dim)">No dormant wakeups in the last ${hours}h</td></tr>`
         return
       }
       const fmtPct = n => n != null ? `<span style="color:${n>0?'#4caf50':n<0?'#f44336':'#888'}">${n>0?'+':''}${n.toFixed(1)}%</span>` : '<span style="color:#555">—</span>'
@@ -1653,6 +1654,9 @@
         const runnerHtml = w.runner_name
           ? `<span style="color:#7eb8f7;font-size:11px">🏃 ${escH(w.runner_name)}</span>`
           : '<span style="color:#555">—</span>'
+        const athHtml = w.athMc != null
+          ? `<span style="color:${w.athMc > w.marketCap ? '#4caf50' : '#888'}">${fmtMc(w.athMc)}</span>`
+          : '<span style="color:#555">—</span>'
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:5px 8px;color:var(--text-dim);white-space:nowrap">${fmtTime(w.detectedAt)}</td>
           <td style="padding:5px 8px">
@@ -1668,10 +1672,11 @@
           <td style="padding:5px 8px;text-align:right">${fmtPct(w.change6h)}</td>
           <td style="padding:5px 8px;text-align:right">${fmtPct(w.change24h)}</td>
           <td style="padding:5px 8px">${runnerHtml}</td>
+          <td style="padding:5px 8px;text-align:right">${athHtml}</td>
         </tr>`
       }).join('')
     } catch(e) {
-      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:20px;color:#f44336">Error loading history</td></tr>`
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px;color:#f44336">Error loading history</td></tr>`
     }
   }
 
