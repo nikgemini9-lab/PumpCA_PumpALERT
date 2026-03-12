@@ -347,6 +347,34 @@ export function startServer(
     res.json(moversPoller.getMetaAnalysis())
   })
 
+  // ── GET /api/debug/axiom?mint=XXX ─────────────────────────────────────────
+  // Tests the Axiom pair-info call for a given mint. Returns raw response +
+  // which pair address was used. Useful for diagnosing viewer count issues.
+  app.get('/api/debug/axiom', async (req: Request, res: Response) => {
+    if (!axiomPoller) {
+      res.status(503).json({ error: 'Axiom poller not running (no AXIOM_COOKIE set)' })
+      return
+    }
+    const mint = req.query.mint as string | undefined
+    if (!mint || mint.length < 32) {
+      res.status(400).json({ error: 'Pass ?mint=<solana_mint_address>' })
+      return
+    }
+    // Find the mover to get its pair address (Raydium pool for graduated tokens)
+    const mover = moversPoller.getMovers().find(m => m.mint === mint)
+    const pairAddress = mover?.pairAddress ?? null
+
+    const result = await axiomPoller.debugFetchPairInfo(mint, pairAddress ?? undefined)
+    res.json({
+      mint,
+      pairAddressUsed: result?.pairAddressUsed ?? null,
+      pairAddressSource: pairAddress ? 'dexscreener (raydium pool)' : 'bonding curve PDA (derived)',
+      cookieOk: axiomPoller.isCookieOk(),
+      axiomResponse: result?.data ?? null,
+      error: result?.error ?? null,
+    })
+  })
+
   // ── GET /api/users ────────────────────────────────────────────────────────
   app.get('/api/users', (_req: Request, res: Response) => {
     res.json(config.telegram.users.map(u => u.name))

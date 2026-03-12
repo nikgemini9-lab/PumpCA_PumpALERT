@@ -141,6 +141,34 @@ export class AxiomPoller extends EventEmitter {
     }
   }
 
+  /**
+   * Debug helper — returns raw Axiom response + which pair address was used.
+   * Exposed via GET /api/debug/axiom?mint=XXX to diagnose viewer count issues.
+   */
+  async debugFetchPairInfo(
+    mint: string,
+    overridePairAddress?: string
+  ): Promise<{ pairAddressUsed: string; data: any; error: null } | { pairAddressUsed: string; data: null; error: string }> {
+    const { getBondingCurveAddress } = await import('./pump')
+    const pairAddressUsed = overridePairAddress || getBondingCurveAddress(mint).toString()
+    const url = `https://api6.axiom.trade/pair-info?pairAddress=${pairAddressUsed}&v=${Date.now()}`
+    try {
+      const axios = (await import('axios')).default
+      const res = await axios.get(url, {
+        headers: {
+          Cookie: config.axiom.cookie,
+          'User-Agent': 'Mozilla/5.0 (compatible; PumpAlert/1.0)',
+          Accept: 'application/json',
+        },
+        timeout: 8_000,
+        validateStatus: () => true,  // return all status codes so we can inspect them
+      })
+      return { pairAddressUsed, data: { status: res.status, body: res.data }, error: null }
+    } catch (err: any) {
+      return { pairAddressUsed, data: null, error: err?.message ?? 'Unknown error' }
+    }
+  }
+
   // ── Watchlist poll cycle ──────────────────────────────────────────────────
 
   private async poll(): Promise<void> {
