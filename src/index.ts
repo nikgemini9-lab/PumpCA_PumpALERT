@@ -14,7 +14,7 @@
 import axios from 'axios'
 import TelegramBot from 'node-telegram-bot-api'
 import { config } from './config'
-import { initDatabase, getActiveTokens, getOgRadarHits } from './database'
+import { initDatabase, getActiveTokens, getOgRadarHits, addDormantWakeup } from './database'
 import { SolanaMonitor } from './monitor'
 import { DexScreenerPoller } from './poller'
 import { AlertManager } from './alerts'
@@ -142,11 +142,13 @@ async function main(): Promise<void> {
 
       // Check for a recent runner that caused this dormant coin to move (OG radar hits, last 6h)
       let runnerLine = ''
+      let runnerHit: { migratedMint: string; migratedName: string } | null = null
       try {
         const SIX_HOURS = 6 * 60 * 60_000
         const ogHits = await getOgRadarHits(50)
         const hit = ogHits.find(h => h.ogMint === mover.mint && Date.now() - h.detectedAt < SIX_HOURS)
         if (hit) {
+          runnerHit = { migratedMint: hit.migratedMint, migratedName: hit.migratedName }
           // Prefer live MC from movers if the runner is still in the list
           const runnerMover = moversPoller.getMovers().find(r => r.mint === hit.migratedMint)
           const runnerMc = runnerMover?.marketCap ?? hit.migratedMc
@@ -164,6 +166,20 @@ async function main(): Promise<void> {
           viewerLine = `\n👀 Axiom:  <b>${viewerCount} watching</b>`
         }
       } catch { /* non-fatal */ }
+
+      // Persist wakeup to DB for 24h history view in dashboard
+      addDormantWakeup({
+        mint:       mover.mint,
+        name:       mover.name,
+        symbol:     mover.symbol,
+        marketCap:  mover.marketCap,
+        ageHours:   mover.ageHours,
+        change1h:   mover.change1h,
+        change6h:   mover.change6h,
+        change24h:  mover.change24h,
+        runnerMint: runnerHit?.migratedMint ?? null,
+        runnerName: runnerHit?.migratedName ?? null,
+      }).catch(err => console.error('[Movers] Failed to persist dormant wakeup:', err))
 
       const contextLine = runnerLine
         ? `⚡ OG pumping — runner detected above.`

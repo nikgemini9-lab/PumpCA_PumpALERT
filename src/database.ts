@@ -1,6 +1,6 @@
 import { createClient, Client } from '@libsql/client'
 import path from 'path'
-import { Token, Wallet, WalletHolding, RecentAlert, OgRadarHit } from './types'
+import { Token, Wallet, WalletHolding, RecentAlert, OgRadarHit, DormantWakeup } from './types'
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'pump_alert.db')
 
@@ -74,10 +74,25 @@ export async function initDatabase(): Promise<void> {
       og_buy_volume_usd   REAL NOT NULL DEFAULT 0,
       detected_at         INTEGER NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS dormant_wakeups (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      mint        TEXT NOT NULL,
+      name        TEXT NOT NULL,
+      symbol      TEXT NOT NULL,
+      market_cap  REAL NOT NULL,
+      age_hours   INTEGER NOT NULL,
+      change_1h   REAL,
+      change_6h   REAL,
+      change_24h  REAL,
+      runner_mint TEXT,
+      runner_name TEXT,
+      detected_at INTEGER NOT NULL
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_alerts_mint_sent ON alerts(mint, sent_at)`,
     `CREATE INDEX IF NOT EXISTS idx_tokens_active ON tokens(active)`,
     `CREATE INDEX IF NOT EXISTS idx_holdings_wallet ON wallet_holdings(wallet_address)`,
     `CREATE INDEX IF NOT EXISTS idx_og_radar_detected ON og_radar(detected_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_dormant_detected ON dormant_wakeups(detected_at)`,
   ]
 
   for (const sql of statements) {
@@ -493,6 +508,56 @@ export async function getOgRadarHits(limit = 50): Promise<OgRadarHit[]> {
     ogBuyCount: Number(r.og_buy_count ?? 0),
     ogBuyVolumeUsd: Number(r.og_buy_volume_usd ?? 0),
     detectedAt: Number(r.detected_at),
+  }))
+}
+
+// ── Dormant Wakeup History ────────────────────────────────────────────────────
+
+export async function addDormantWakeup(w: {
+  mint: string
+  name: string
+  symbol: string
+  marketCap: number
+  ageHours: number
+  change1h: number | null
+  change6h: number | null
+  change24h: number | null
+  runnerMint?: string | null
+  runnerName?: string | null
+}): Promise<void> {
+  await client.execute({
+    sql: `INSERT INTO dormant_wakeups
+            (mint, name, symbol, market_cap, age_hours, change_1h, change_6h, change_24h,
+             runner_mint, runner_name, detected_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      w.mint, w.name, w.symbol, w.marketCap, w.ageHours,
+      w.change1h ?? null, w.change6h ?? null, w.change24h ?? null,
+      w.runnerMint ?? null, w.runnerName ?? null,
+      Date.now(),
+    ],
+  })
+}
+
+export async function getDormantWakeups(hours = 24, limit = 100): Promise<DormantWakeup[]> {
+  const since = Date.now() - hours * 60 * 60_000
+  const rows = (await client.execute({
+    sql: `SELECT * FROM dormant_wakeups WHERE detected_at >= ? ORDER BY detected_at DESC LIMIT ?`,
+    args: [since, limit],
+  })).rows as any[]
+  return rows.map(r => ({
+    id:          Number(r.id),
+    mint:        r.mint as string,
+    name:        r.name as string,
+    symbol:      r.symbol as string,
+    marketCap:   Number(r.market_cap),
+    ageHours:    Number(r.age_hours),
+    change1h:    r.change_1h  != null ? Number(r.change_1h)  : null,
+    change6h:    r.change_6h  != null ? Number(r.change_6h)  : null,
+    change24h:   r.change_24h != null ? Number(r.change_24h) : null,
+    runnerMint:  r.runner_mint as string | null,
+    runnerName:  r.runner_name as string | null,
+    detectedAt:  Number(r.detected_at),
   }))
 }
 

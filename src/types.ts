@@ -150,6 +150,21 @@ export interface RecentAlert {
   sentAt: number
 }
 
+export interface DormantWakeup {
+  id: number
+  mint: string
+  name: string
+  symbol: string
+  marketCap: number
+  ageHours: number
+  change1h: number | null
+  change6h: number | null
+  change24h: number | null
+  runnerMint: string | null
+  runnerName: string | null
+  detectedAt: number
+}
+
 export interface OgRadarHit {
   id: number
   migratedMint: string

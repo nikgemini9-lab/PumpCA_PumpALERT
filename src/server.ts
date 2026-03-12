@@ -368,6 +368,13 @@ export function startServer(
     res.json({ mint, cookieOk: axiomPoller.isCookieOk(), dexscreenerPairAddress: pairAddress, ...result })
   })
 
+  // ── GET /api/dormant-history?hours=24 ────────────────────────────────────
+  app.get('/api/dormant-history', async (req: Request, res: Response) => {
+    const hours = Math.min(Number(req.query.hours ?? 24), 168) // cap at 7 days
+    const wakeups = await db.getDormantWakeups(hours)
+    res.json({ wakeups, hours })
+  })
+
   // ── GET /api/users ────────────────────────────────────────────────────────
   app.get('/api/users', (_req: Request, res: Response) => {
     res.json(config.telegram.users.map(u => u.name))
