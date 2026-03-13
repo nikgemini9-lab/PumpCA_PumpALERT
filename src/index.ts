@@ -220,13 +220,40 @@ async function main(): Promise<void> {
   axiomPoller.start()
 
   // Periodic ATH updater for dormant wakeups — every 2 minutes
-  // Checks live MC from movers cache / watchlist and updates ath_mc if price peaked higher
+  // Checks live MC from movers cache / watchlist / DexScreener and updates ath_mc if price peaked higher
   setInterval(async () => {
     try {
       const wakeups = await getDormantWakeups(168) // last 7 days
       if (wakeups.length === 0) return
       const movers = moversPoller.getMovers()
       const watchlist = await getActiveTokens()
+
+      // Mints not covered by movers cache or watchlist → fetch fresh from DexScreener
+      const moverMints = new Set(movers.map(m => m.mint))
+      const watchMints = new Set(watchlist.map(t => t.mint))
+      const missingMints = [...new Set(wakeups.map(w => w.mint))]
+        .filter(mint => !moverMints.has(mint) && !watchMints.has(mint))
+
+      const dexMcMap = new Map<string, number>()
+      if (missingMints.length > 0) {
+        try {
+          const BATCH = 30
+          for (let i = 0; i < missingMints.length; i += BATCH) {
+            const batch = missingMints.slice(i, i + BATCH)
+            const res = await axios.get(
+              `https://api.dexscreener.com/latest/dex/tokens/${batch.join(',')}`,
+              { timeout: 10_000, headers: { 'User-Agent': 'PumpAlert/1.0' } }
+            )
+            for (const pair of (res.data?.pairs ?? []) as any[]) {
+              if (pair.chainId !== 'solana' || !pair.baseToken?.address || !pair.fdv) continue
+              const addr = pair.baseToken.address as string
+              const prev = dexMcMap.get(addr) ?? 0
+              if (pair.fdv > prev) dexMcMap.set(addr, pair.fdv)
+            }
+          }
+        } catch { /* non-fatal, best-effort */ }
+      }
+
       for (const w of wakeups) {
         const mover = movers.find(m => m.mint === w.mint)
         let currentMc: number | null = mover?.marketCap ?? null
@@ -234,6 +261,7 @@ async function main(): Promise<void> {
           const tok = watchlist.find(t => t.mint === w.mint)
           if (tok?.marketCap) currentMc = tok.marketCap
         }
+        if (currentMc == null) currentMc = dexMcMap.get(w.mint) ?? null
         if (currentMc == null) continue
         const storedAth = w.athMc ?? w.marketCap
         if (currentMc > storedAth) {

@@ -1029,6 +1029,8 @@
   let moverFilter = 'all'
   let moverSortKey = 'change1h'
   let moverSortDir = -1   // -1 = desc, 1 = asc
+  let moversShowAll = false
+  const MOVERS_PAGE = 40
   let moversTimer = null
   let moversLastPollAt = null
   let moversLastError = null
@@ -1606,6 +1608,7 @@
 
   function setMoverFilter(filter) {
     moverFilter = filter
+    moversShowAll = false
     document.querySelectorAll('.movers-tabs .mover-tab').forEach(t => t.classList.remove('active'))
     // Re-add active to the clicked tab by filter mapping
     const tabs = document.querySelectorAll('.movers-tabs .mover-tab')
@@ -1729,7 +1732,10 @@
       return
     }
 
-    tbody.innerHTML = list.map((m, i) => {
+    const totalCount = list.length
+    const visible = moversShowAll ? list : list.slice(0, MOVERS_PAGE)
+
+    const rows = visible.map((m, i) => {
       const dormantClass = m.isDormant ? ' dormant-row' : m.isRug ? ' rug-row' : ''
       const dormantBadge = m.isDormant ? ' <span style="font-size:11px">👴</span>' : ''
       const gradBadge = m.graduated ? ' <span style="color:var(--green);font-size:10px">✓</span>' : ''
@@ -1781,6 +1787,17 @@
         </td>
       </tr>`
     }).join('')
+
+    const remaining = totalCount - visible.length
+    const showMoreRow = !moversShowAll && remaining > 0
+      ? `<tr><td colspan="13" style="text-align:center;padding:10px 0">
+           <button onclick="moversShowAll=true;renderMovers()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 18px;cursor:pointer;font-size:12px">
+             Show ${remaining} more…
+           </button>
+         </td></tr>`
+      : ''
+
+    tbody.innerHTML = rows + showMoreRow
   }
 
   function fmtPct(n) {
