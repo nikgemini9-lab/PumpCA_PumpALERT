@@ -26,6 +26,10 @@ export class AlertManager {
   private priceAtLastAlert: Map<string, number> = new Map()
   // Hard minimum gap between any two alerts for the same token (anti-burst)
   private readonly MIN_ALERT_GAP_MS = 2 * 60_000
+  // Last time a "holding moving" 6h alert fired per mint (4h cooldown)
+  private holdingMoveAlertedAt: Map<string, number> = new Map()
+  private readonly HOLDING_MOVE_COOLDOWN_MS = 4 * 60 * 60_000
+  private readonly HOLDING_MOVE_THRESHOLD_PCT = 10
 
   constructor(bot: TelegramBot, axiomPoller: AxiomPoller | null = null) {
     this.bot = bot
@@ -97,6 +101,18 @@ export class AlertManager {
       this.handleDexScreenerAsync(mint, pair, priceChangePct, buysM5, currentPrice).catch(err =>
         console.error('[Alert] handleDexScreenerData error:', err)
       )
+    }
+
+    // Holding movement alert — 6h change >= +10%
+    const change6h = pair.priceChange?.h6 ?? null
+    if (change6h != null && change6h >= this.HOLDING_MOVE_THRESHOLD_PCT) {
+      const lastFired = this.holdingMoveAlertedAt.get(mint) ?? 0
+      if (Date.now() - lastFired > this.HOLDING_MOVE_COOLDOWN_MS) {
+        this.holdingMoveAlertedAt.set(mint, Date.now())
+        this.sendHoldingMoveAlert(mint, pair, change6h).catch(err =>
+          console.error('[Alert] holdingMoveAlert error:', err)
+        )
+      }
     }
   }
 
@@ -260,6 +276,39 @@ export class AlertManager {
     }
 
     return timeSince < config.alerts.cooldownMinutes * 60_000
+  }
+
+  private async sendHoldingMoveAlert(mint: string, pair: DexScreenerPair, change6h: number): Promise<void> {
+    const chatIds = await this.resolveTargets(mint)
+    if (chatIds.length === 0) return
+
+    const name   = pair.baseToken?.name   ?? 'Unknown'
+    const symbol = pair.baseToken?.symbol ?? '?'
+    const mc     = pair.fdv ?? pair.marketCap
+    const mcStr  = mc != null
+      ? (mc >= 1e6 ? `$${(mc / 1e6).toFixed(2)}M` : mc >= 1e3 ? `$${(mc / 1e3).toFixed(1)}K` : `$${mc.toFixed(0)}`)
+      : null
+    const escH = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+    const text = [
+      `💰 <b>HOLDING MOVING — GET READY TO SELL!</b>`,
+      ``,
+      `<b>${escH(name)}</b>  $${escH(symbol)}`,
+      `<code>${mint}</code>`,
+      ``,
+      `📈 6H Change: <b>+${change6h.toFixed(1)}%</b>`,
+      mcStr ? `💎 MC: <b>${mcStr}</b>` : null,
+      ``,
+      [
+        `<a href="https://axiom.trade/t/${mint}">📊 Axiom</a>`,
+        `<a href="https://dexscreener.com/solana/${mint}">📈 DexScr</a>`,
+      ].join('  |  '),
+    ].filter(l => l !== null).join('\n')
+
+    for (const chatId of chatIds) {
+      this.bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+        .catch(err => console.error('[Alert] holdingMove Telegram error:', err?.message))
+    }
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {
