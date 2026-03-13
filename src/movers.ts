@@ -47,6 +47,7 @@ const ENRICH_MS        =  2 * 60_000  // 2 minutes — refresh MC/price for know
 const DORMANT_AGE_DAYS = 25
 const DORMANT_MOVE_1H  = 30           // % threshold
 const DORMANT_MOVE_6H  = 60           // % threshold
+const DORMANT_MOVE_24H = 25           // % threshold — catches slow-build wakeups
 const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
 const MAX_MINT_CACHE   = 500          // rolling window of known mints
 const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
@@ -335,14 +336,16 @@ export class MoversPoller extends EventEmitter {
       this.addSnap(mint, now, mc)
       const computed = this.computeChanges(mint, now)
 
-      const change1h = dex?.priceChange?.h1  ?? computed.c1h
-      const change6h = dex?.priceChange?.h6  ?? computed.c6h
+      const change1h  = dex?.priceChange?.h1  ?? computed.c1h
+      const change6h  = dex?.priceChange?.h6  ?? computed.c6h
+      const change24h = dex?.priceChange?.h24 ?? computed.c24h
 
       const isDormant =
         ageDays >= DORMANT_AGE_DAYS &&
         lastTradeAt > now - 24 * 60 * 60_000 &&
-        (Math.abs(change1h ?? 0) >= DORMANT_MOVE_1H ||
-         Math.abs(change6h ?? 0) >= DORMANT_MOVE_6H)
+        (Math.abs(change1h  ?? 0) >= DORMANT_MOVE_1H  ||
+         Math.abs(change6h  ?? 0) >= DORMANT_MOVE_6H  ||
+         Math.abs(change24h ?? 0) >= DORMANT_MOVE_24H)
 
       const entry: MoverEntry = {
         mint,
@@ -355,7 +358,7 @@ export class MoversPoller extends EventEmitter {
         change5m:  dex?.priceChange?.m5  ?? computed.c5m,
         change1h,
         change6h,
-        change24h: dex?.priceChange?.h24 ?? computed.c24h,
+        change24h,
         volume24h: dex?.volume?.h24      ?? null,
         txns24h:   dex
           ? ((dex.txns?.h24?.buys ?? 0) + (dex.txns?.h24?.sells ?? 0))
