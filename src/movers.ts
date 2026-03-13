@@ -189,7 +189,8 @@ export class MoversPoller extends EventEmitter {
   private mintCache   = new Map<string, MintRecord>()   // mint → record
   private history     = new Map<string, Snap[]>()
   private movers      = new Map<string, MoverEntry>()
-  private dormantSeen        = new Set<string>()
+  // mint → timestamp of last dormant alert; allows re-alerting after 12h
+  private dormantSeen = new Map<string, number>()
   private graduationEmitted  = new Set<string>()
   private discoverTimer: NodeJS.Timeout | null = null
   private enrichTimer:   NodeJS.Timeout | null = null
@@ -376,8 +377,9 @@ export class MoversPoller extends EventEmitter {
       this.movers.set(mint, entry)
       updated++
 
-      if (isDormant && !this.dormantSeen.has(mint)) {
-        this.dormantSeen.add(mint)
+      const lastDormantAt = this.dormantSeen.get(mint) ?? 0
+      if (isDormant && now - lastDormantAt > 12 * 60 * 60_000) {
+        this.dormantSeen.set(mint, now)
         this.emit('dormant', entry)
         console.log(
           `[Movers] 👴 Dormant wakeup: ${entry.name} (${mint.slice(0, 8)}) ` +
