@@ -244,15 +244,10 @@ export class AxiomPoller extends EventEmitter {
       .sort((a, b) => b.marketCap - a.marketCap)
       .slice(0, MAX_MOVERS_TO_POLL)
 
-    console.log(`[Axiom] Polling viewer counts for ${sorted.length} movers…`)
-
     let fetched = 0
     let withViewers = 0
     for (const mover of sorted) {
       try {
-        // Graduated tokens: use DexScreener pair address (Raydium pool)
-        // Non-graduated: use mint address directly
-        const pairUsed = mover.pairAddress || mover.mint
         const info = await this.fetchPairInfo(mover.mint, mover.pairAddress)
         if (info) {
           this.moversAxiomData.set(mover.mint, {
@@ -262,12 +257,9 @@ export class AxiomPoller extends EventEmitter {
           })
           fetched++
           if (info.userCount > 0) withViewers++
-          console.log(`[Axiom] ${mover.mint.slice(0, 8)}… pair=${pairUsed.slice(0, 8)}… viewers=${info.userCount} top10=${info.top10Holders}%`)
-        } else {
-          console.log(`[Axiom] ${mover.mint.slice(0, 8)}… pair=${pairUsed.slice(0, 8)}… → null (404 or auth fail)`)
         }
-      } catch (err: any) {
-        console.log(`[Axiom] ${mover.mint.slice(0, 8)}… error: ${err?.message}`)
+      } catch {
+        // non-fatal; counted in summary below
       }
       await sleep(MOVER_REQUEST_DELAY_MS)
     }
@@ -338,8 +330,6 @@ export class AxiomPoller extends EventEmitter {
         }
       } else {
         // Non-auth error (404, timeout, etc.) — don't penalise cookie health
-        const msg = axErr?.message ?? 'unknown'
-        console.log(`[Axiom] fetchPairInfo failed for ${mint.slice(0, 8)}… status=${status ?? 'N/A'} err=${msg}`)
         this.consecutiveAuthFails = 0
       }
       return null
