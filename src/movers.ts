@@ -19,7 +19,9 @@
  * tokens discovered earlier continue to be enriched via DexScreener even after
  * they graduate and stop appearing in bonding-curve transactions.
  *
- * Poll interval: 15 minutes (100 credits × 96 polls/day ≈ 288 k credits/month).
+ * Poll interval: configurable via MOVERS_POLL_MINUTES env var (default 5 min).
+ *   5 min  → 100 credits × 288 polls/day ≈ 864 k credits/month
+ *   15 min → 100 credits × 96 polls/day  ≈ 288 k credits/month
  * Metadata is only fetched for mints seen in ≥ 2 poll cycles (seenCount ≥ 2)
  * to avoid paying 100 credits for flash tokens that never recur.
  *
@@ -42,14 +44,15 @@ const HELIUS_API = 'https://api.helius.xyz/v0'
 const DEX_API    = 'https://api.dexscreener.com/latest/dex/tokens'
 const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 
-const POLL_MS          = 15 * 60_000  // 15 minutes (was 5 — saves ~19k credits/day)
-const ENRICH_MS        =  2 * 60_000  // 2 minutes — refresh MC/price for known mints (free)
+// Configurable via env vars — reduce for faster dormant alerts at higher Helius credit cost
+const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '5')  || 5)  * 60_000   // default 5 min
+const ENRICH_MS        = (parseInt(process.env.MOVERS_ENRICH_SECONDS ?? '60') || 60) * 1_000    // default 60s
 const DORMANT_AGE_DAYS = 25
 const DORMANT_MOVE_1H  = 30           // % threshold
 const DORMANT_MOVE_6H  = 60           // % threshold
 const DORMANT_MOVE_24H = 25           // % threshold — catches slow-build wakeups
 const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
-const MAX_MINT_CACHE   = 500          // rolling window of known mints
+const MAX_MINT_CACHE   = 1000         // rolling window of known mints (larger = fewer evictions of old dormant tokens)
 const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
 
 // ── Internal types ─────────────────────────────────────────────────────────────
@@ -212,17 +215,19 @@ export class MoversPoller extends EventEmitter {
     this.discover().catch(err => console.error('[Movers] discover error:', err?.message))
     this.enrich().catch(err => console.error('[Movers] enrich error:', err?.message))
 
-    // Discovery: 15 min — Helius Enhanced Txs (100 credits/call, kept slow)
+    // Discovery — Helius Enhanced Txs (100 credits/call); interval set by MOVERS_POLL_MINUTES
     this.discoverTimer = setInterval(
       () => this.discover().catch(err => console.error('[Movers] discover error:', err?.message)),
       POLL_MS
     )
-    // Enrichment: 2 min — DexScreener (free) + bonding curve RPC (~1 credit/batch)
+    // Enrichment — DexScreener (free) + bonding curve RPC (~1 credit/batch); interval set by MOVERS_ENRICH_SECONDS
     this.enrichTimer = setInterval(
       () => this.enrich().catch(err => console.error('[Movers] enrich error:', err?.message)),
       ENRICH_MS
     )
-    console.log('[Movers] Poller started — discovery 15 min, enrichment 2 min')
+    console.log(
+      `[Movers] Poller started — discovery ${POLL_MS / 60_000} min, enrichment ${ENRICH_MS / 1_000} s`
+    )
   }
 
   stop(): void {
@@ -317,9 +322,16 @@ export class MoversPoller extends EventEmitter {
       const change6h  = dex?.priceChange?.h6  ?? computed.c6h
       const change24h = dex?.priceChange?.h24 ?? computed.c24h
 
+      // For graduated tokens, DexScreener's own txns24h.buys tells us if the token
+      // traded recently without waiting for the next discovery cycle to update lastTradeAt.
+      // This cuts worst-case dormant alert latency from ~17 min to ~60 s for graduated tokens.
+      const hasRecentActivity =
+        lastTradeAt > now - 24 * 60 * 60_000 ||
+        (graduated && (dex?.txns?.h24?.buys ?? 0) > 0)
+
       const isDormant =
         ageDays >= DORMANT_AGE_DAYS &&
-        lastTradeAt > now - 24 * 60 * 60_000 &&
+        hasRecentActivity &&
         (Math.abs(change1h  ?? 0) >= DORMANT_MOVE_1H  ||
          Math.abs(change6h  ?? 0) >= DORMANT_MOVE_6H  ||
          Math.abs(change24h ?? 0) >= DORMANT_MOVE_24H)
