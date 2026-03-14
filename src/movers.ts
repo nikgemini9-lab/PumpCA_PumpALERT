@@ -49,9 +49,13 @@ const DEX_API    = 'https://api.dexscreener.com/latest/dex/tokens'
 const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 
 // External discovery — fallback sources for old Raydium tokens (pre-pumpswap graduates)
-const BIRDEYE_TOKENLIST_API = 'https://public-api.birdeye.so/defi/tokenlist'
-const DEX_BOOSTS_API        = 'https://api.dexscreener.com/token-boosts/active/v1'
-const EXTERNAL_DISCOVER_MS  = 5 * 60_000  // every 5 minutes
+const BIRDEYE_TOKENLIST_API  = 'https://public-api.birdeye.so/defi/tokenlist'
+const DEX_BOOSTS_API         = 'https://api.dexscreener.com/token-boosts/active/v1'
+// Axiom meme-trending — the exact endpoint powering the Axiom Movers tab.
+// Requires a valid AXIOM_COOKIE. Response fields: tokenAddress, tokenName, priceChange24h, etc.
+// Source: AxiomTradeAPI-py SDK (https://github.com/ChipaDevTeam/AxiomTradeAPI-py)
+const AXIOM_TRENDING_URL     = 'https://api6.axiom.trade/meme-trending?timePeriod=1h'
+const EXTERNAL_DISCOVER_MS   = 5 * 60_000  // every 5 minutes
 
 // Configurable via env vars — reduce for faster dormant alerts at higher Helius credit cost
 const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '5')  || 5)  * 60_000   // default 5 min
@@ -320,6 +324,38 @@ export class MoversPoller extends EventEmitter {
       if (added > 0) console.log(`[Movers] External: DexScreener boosts returned ${added} Solana tokens`)
     } catch (err: any) {
       console.warn('[Movers] External DexScreener boosts error:', err?.message)
+    }
+
+    // 3. Axiom meme-trending — exact data source for the Axiom "Movers" tab (timePeriod=1h).
+    //    Requires a valid AXIOM_COOKIE. This is the highest-quality source for catching
+    //    old dormant tokens currently moving — activates automatically when cookie is valid.
+    if (config.axiom.cookie) {
+      try {
+        const res = await axios.get(AXIOM_TRENDING_URL, {
+          headers: {
+            Cookie: config.axiom.cookie,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept: 'application/json, text/plain, */*',
+            Origin: 'https://axiom.trade',
+            Referer: 'https://axiom.trade/',
+          },
+          timeout: 8_000,
+          validateStatus: s => s === 200,
+        })
+        const items: any[] = Array.isArray(res.data) ? res.data : (res.data?.data ?? [])
+        let axiomAdded = 0
+        for (const item of items) {
+          const mint = item.tokenAddress ?? item.mint ?? item.address
+          if (mint && mint !== WSOL) { mints.add(mint); axiomAdded++ }
+        }
+        if (axiomAdded > 0) console.log(`[Movers] External: Axiom meme-trending returned ${axiomAdded} tokens`)
+      } catch (err: any) {
+        // 401/403 = cookie expired; log once so user knows to rotate it
+        const status = (err as any)?.response?.status
+        if (status === 401 || status === 403) {
+          console.warn('[Movers] External: Axiom meme-trending auth failed — rotate AXIOM_COOKIE to enable this source')
+        }
+      }
     }
 
     // Add newly-discovered mints to cache — enrichment will compute real age from DexScreener
