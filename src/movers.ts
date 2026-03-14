@@ -33,6 +33,7 @@ import axios from 'axios'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { EventEmitter } from 'events'
 import { config } from './config'
+import * as db from './database'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -195,7 +196,9 @@ export class MoversPoller extends EventEmitter {
   private movers      = new Map<string, MoverEntry>()
   // mint → timestamp of last dormant alert; allows re-alerting after 12h
   private dormantSeen = new Map<string, number>()
-  private graduationEmitted  = new Set<string>()
+  private graduationEmitted       = new Set<string>()
+  // Mints already persisted to dormant_candidates table (avoid redundant writes)
+  private dormantCandidatesSaved  = new Set<string>()
   private discoverTimer: NodeJS.Timeout | null = null
   private enrichTimer:   NodeJS.Timeout | null = null
   private lastPollAt: number | null = null
@@ -211,6 +214,12 @@ export class MoversPoller extends EventEmitter {
   }
 
   start(): void {
+    // Seed mint cache from DB before starting polling loops — this ensures dormant-age
+    // tokens that were previously seen survive restarts and cache evictions.
+    this.loadPersistedCandidates().catch(err =>
+      console.error('[Movers] Failed to load dormant candidates:', err?.message)
+    )
+
     // Kick both loops immediately on startup
     this.discover().catch(err => console.error('[Movers] discover error:', err?.message))
     this.enrich().catch(err => console.error('[Movers] enrich error:', err?.message))
@@ -245,7 +254,34 @@ export class MoversPoller extends EventEmitter {
     }
   }
 
-  // ── Discovery (15 min) — find new mints via Helius Enhanced Txs ──────────────
+  // ── Startup: seed cache from persisted dormant candidates ─────────────────
+
+  private async loadPersistedCandidates(): Promise<void> {
+    try {
+      const saved = await db.getDormantCandidates()
+      let loaded = 0
+      for (const c of saved) {
+        this.dormantCandidatesSaved.add(c.mint)
+        if (!this.mintCache.has(c.mint)) {
+          this.mintCache.set(c.mint, {
+            name:            c.name,
+            symbol:          c.symbol,
+            firstSeen:       c.firstSeen,
+            lastTradeAt:     c.firstSeen,   // enrichment will update via DexScreener txns
+            graduated:       false,
+            metadataFetched: true,           // name/symbol already known
+            seenCount:       2,             // skip single-poll metadata gate
+          })
+          loaded++
+        }
+      }
+      if (loaded > 0) console.log(`[Movers] Seeded ${loaded} dormant candidates from DB`)
+    } catch (err: any) {
+      console.warn('[Movers] Could not load dormant candidates:', err?.message)
+    }
+  }
+
+  // ── Discovery (5 min) — find new mints via Helius Enhanced Txs ──────────────
 
   private async discover(): Promise<void> {
     if (!this.heliusKey) {
@@ -369,6 +405,15 @@ export class MoversPoller extends EventEmitter {
       this.movers.set(mint, entry)
       updated++
 
+      // Persist dormant candidates to DB the first time they reach 25+ days old.
+      // This ensures they re-enter the mint cache on restart and are never permanently
+      // evicted — critical for catching graduated tokens (Raydium) that don't appear
+      // in bonding-curve discovery transactions.
+      if (ageDays >= DORMANT_AGE_DAYS && !this.dormantCandidatesSaved.has(mint)) {
+        this.dormantCandidatesSaved.add(mint)
+        db.upsertDormantCandidate(mint, entry.name, entry.symbol, createdAt).catch(() => {})
+      }
+
       const lastDormantAt = this.dormantSeen.get(mint) ?? 0
       if (isDormant && now - lastDormantAt > 12 * 60 * 60_000) {
         this.dormantSeen.set(mint, now)
@@ -437,10 +482,21 @@ export class MoversPoller extends EventEmitter {
         }
       }
 
-      // Evict oldest entries if cache is over the limit
+      // Evict entries if cache is over the limit.
+      // CRITICAL: protect dormant candidates (age >= DORMANT_AGE_DAYS) from eviction —
+      // they must stay in cache so the enrichment cycle can detect when they wake up.
+      // Evict young tokens (< DORMANT_AGE_DAYS) sorted by least-recently-active first.
       if (this.mintCache.size > MAX_MINT_CACHE) {
+        const dormantAgeMs = DORMANT_AGE_DAYS * 24 * 60 * 60_000
+        const evictNow = Date.now()
         const sorted = Array.from(this.mintCache.entries())
-          .sort((a, b) => a[1].lastTradeAt - b[1].lastTradeAt)
+          .sort((a, b) => {
+            const aOld = (evictNow - a[1].firstSeen) >= dormantAgeMs
+            const bOld = (evictNow - b[1].firstSeen) >= dormantAgeMs
+            if (aOld && !bOld) return 1   // protect a — sort to end
+            if (!aOld && bOld) return -1  // protect b — sort to end
+            return a[1].lastTradeAt - b[1].lastTradeAt  // evict youngest-inactive first
+          })
         const toRemove = sorted.slice(0, this.mintCache.size - MAX_MINT_CACHE)
         for (const [m] of toRemove) {
           this.mintCache.delete(m)

@@ -88,6 +88,17 @@ export async function initDatabase(): Promise<void> {
       runner_name TEXT,
       detected_at INTEGER NOT NULL
     )`,
+    // Persists every token that has ever aged past DORMANT_AGE_DAYS so that:
+    //   1. They survive in-memory cache evictions (which evicted dormant tokens first — a bug)
+    //   2. They are reloaded on startup so the system watches them even after restarts
+    // Without this, once a graduated 1y-old token is evicted it can never re-enter
+    // the cache because discovery only watches the bonding-curve program (pre-graduation).
+    `CREATE TABLE IF NOT EXISTS dormant_candidates (
+      mint       TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      symbol     TEXT NOT NULL,
+      first_seen INTEGER NOT NULL
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_alerts_mint_sent ON alerts(mint, sent_at)`,
     `CREATE INDEX IF NOT EXISTS idx_tokens_active ON tokens(active)`,
     `CREATE INDEX IF NOT EXISTS idx_holdings_wallet ON wallet_holdings(wallet_address)`,
@@ -602,6 +613,40 @@ export async function getDormantWakeups(hours = 24, limit = 100): Promise<Dorman
     detectedAt:  Number(r.detected_at),
     athMc:       r.ath_mc != null ? Number(r.ath_mc) : null,
     athAt:       r.ath_at != null ? Number(r.ath_at) : null,
+  }))
+}
+
+// ── Dormant candidates ────────────────────────────────────────────────────────
+
+/** Upsert a token that has aged past 25 days — kept forever so it re-enters the
+ *  mint cache on restart and is never permanently evicted. */
+export async function upsertDormantCandidate(
+  mint: string,
+  name: string,
+  symbol: string,
+  firstSeen: number,
+): Promise<void> {
+  await client.execute({
+    sql: `INSERT INTO dormant_candidates (mint, name, symbol, first_seen)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(mint) DO UPDATE SET
+            name       = excluded.name,
+            symbol     = excluded.symbol`,
+    args: [mint, name, symbol, firstSeen],
+  })
+}
+
+export async function getDormantCandidates(): Promise<Array<{
+  mint: string; name: string; symbol: string; firstSeen: number
+}>> {
+  const rows = (await client.execute(
+    'SELECT mint, name, symbol, first_seen FROM dormant_candidates'
+  )).rows as any[]
+  return rows.map(r => ({
+    mint:      String(r.mint),
+    name:      String(r.name),
+    symbol:    String(r.symbol),
+    firstSeen: Number(r.first_seen),
   }))
 }
 
