@@ -232,29 +232,6 @@ export class MoversPoller extends EventEmitter {
 
   getMovers(): MoverEntry[] { return Array.from(this.movers.values()) }
 
-  /**
-   * Analyze recently-graduated tokens in the mintCache to detect trending themes.
-   * Returns top meta clusters per time window — zero extra API calls.
-   */
-  getMetaAnalysis(): MetaWindow[] {
-    const now      = Date.now()
-    const movers   = Array.from(this.movers.values()).filter(m => m.graduated)
-
-    const WINDOWS: { label: string; ms: number }[] = [
-      { label: '15m', ms: 15 * 60_000 },
-      { label: '2h',  ms:  2 * 60 * 60_000 },
-      { label: '6h',  ms:  6 * 60 * 60_000 },
-      { label: '8h',  ms:  8 * 60 * 60_000 },
-      { label: '12h', ms: 12 * 60 * 60_000 },
-    ]
-
-    return WINDOWS.map(w => {
-      const tokens = movers.filter(m => (now - m.createdAt) <= w.ms)
-      const themes = extractMetaThemes(tokens)
-      return { label: w.label, windowMs: w.ms, tokenCount: tokens.length, themes }
-    })
-  }
-
   getStatus() {
     return {
       count:      this.movers.size,
@@ -659,98 +636,6 @@ export class MoversPoller extends EventEmitter {
 }
 
 // ── Meta Radar ───────────────────────────────────────────────────────────────
-
-export interface MetaTheme {
-  keyword:    string   // display label, e.g. "cat", "lobster"
-  tokenCount: number
-  totalMc:    number
-  avgMc:      number
-  score:      number   // tokenCount × log(1 + avgMc) — higher = stronger meta
-  examples:   { name: string; symbol: string; mint: string; mc: number }[]
-}
-
-export interface MetaWindow {
-  label:      string   // "15m" | "2h" | "6h" | "8h" | "12h"
-  windowMs:   number
-  tokenCount: number   // total graduated tokens in this window
-  themes:     MetaTheme[]
-}
-
-// Words that appear on almost every pump.fun token — not useful for meta detection
-const META_STOPWORDS = new Set([
-  'sol', 'coin', 'token', 'pump', 'fun', 'swap', 'dex',
-  'the', 'and', 'for', 'but', 'not', 'are', 'was',
-])
-
-/**
- * Split a token name into content words.
- * Handles: "CatNip" → ["Cat", "Nip"], "LMEOW" → ["LMEOW"], "$PURR PURR" → ["PURR"]
- */
-function tokenizeWords(name: string): string[] {
-  return name
-    // Split on spaces, underscores, hyphens, $
-    .split(/[\s_\-$]+/)
-    // Split CamelCase: "CatNip" → ["Cat", "Nip"]
-    .flatMap(w => w.replace(/([a-z])([A-Z])/g, '$1 $2').split(' '))
-    // Remove non-alpha chars but keep the whole token
-    .map(w => w.replace(/[^a-zA-Z]/g, '').toLowerCase())
-    // Minimum 3 chars, not a stopword
-    .filter(w => w.length >= 3 && !META_STOPWORDS.has(w))
-}
-
-/**
- * Given a list of graduated mover entries for a time window, find clusters of tokens
- * sharing the same 4-char prefix (handles LOBSTER / LOBSTAR / LOBSTARRR naturally).
- * Returns top 5 themes sorted by score descending.
- */
-function extractMetaThemes(tokens: MoverEntry[]): MetaTheme[] {
-  if (tokens.length === 0) return []
-
-  // prefix → { tokens sharing it, full-word frequencies }
-  const clusters = new Map<string, { entries: MoverEntry[]; words: Map<string, number> }>()
-
-  for (const token of tokens) {
-    const words = tokenizeWords(`${token.name} ${token.symbol}`)
-    for (const word of new Set(words)) {   // dedupe words per token
-      const key = word.length <= 4 ? word : word.slice(0, 4)
-      if (!clusters.has(key)) clusters.set(key, { entries: [], words: new Map() })
-      const cluster = clusters.get(key)!
-      cluster.entries.push(token)
-      cluster.words.set(word, (cluster.words.get(word) ?? 0) + 1)
-    }
-  }
-
-  const themes: MetaTheme[] = []
-
-  for (const [, cluster] of clusters) {
-    // Dedupe tokens within cluster (a token can share multiple word prefixes)
-    const unique = [...new Map(cluster.entries.map(e => [e.mint, e])).values()]
-    if (unique.length < 2) continue   // need at least 2 tokens for a meta
-
-    // Pick the most common full word as the display label
-    const keyword = [...cluster.words.entries()]
-      .sort((a, b) => b[1] - a[1])[0][0]
-
-    const totalMc = unique.reduce((s, e) => s + e.marketCap, 0)
-    const avgMc   = totalMc / unique.length
-    const score   = unique.length * Math.log(1 + avgMc)
-
-    themes.push({
-      keyword,
-      tokenCount: unique.length,
-      totalMc,
-      avgMc,
-      score,
-      examples: unique
-        .sort((a, b) => b.marketCap - a.marketCap)
-        .slice(0, 3)
-        .map(e => ({ name: e.name, symbol: e.symbol, mint: e.mint, mc: e.marketCap })),
-    })
-  }
-
-  // Sort by score desc, take top 5
-  return themes.sort((a, b) => b.score - a.score).slice(0, 5)
-}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

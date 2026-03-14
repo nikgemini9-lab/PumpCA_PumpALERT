@@ -166,7 +166,7 @@
 
     /* ── MAIN GRID ───────────────────────────────────────────── */
     main {
-      padding: 20px 28px 32px;
+      padding: 14px 20px 20px;
       max-width: 1700px;
       margin: 0 auto;
     }
@@ -174,24 +174,24 @@
     /* 3-column layout: wallets | mid-col | right-col */
     .grid-top {
       display: grid;
-      grid-template-columns: 260px 1fr 340px;
-      gap: 16px;
-      margin-bottom: 16px;
+      grid-template-columns: 260px 1fr 320px;
+      gap: 12px;
+      margin-bottom: 12px;
       align-items: start;
     }
 
-    /* Right stacked column: watchlist + alerts + og-radar */
+    /* Right stacked column: watchlist + og-radar */
     .right-col {
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 10px;
     }
 
     /* Center stacked column: holdings + alerts */
     .mid-col {
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 10px;
     }
 
     @media (max-width: 1200px) {
@@ -259,7 +259,7 @@
       color: var(--text-muted);
       font-size: 13px;
       text-align: center;
-      padding: 24px 0;
+      padding: 16px 0;
     }
 
     /* ── WALLET CARD ─────────────────────────────────────────── */
@@ -548,7 +548,6 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
       overflow: hidden;
-      margin-top: 16px;
     }
     .movers-header {
       display: flex;
@@ -628,61 +627,6 @@
     .movers-empty, .movers-loading { padding: 24px; text-align: center; color: var(--text-muted); }
 
     /* ── OG RADAR PANEL ──────────────────────────────────────── */
-    /* ── Meta Radar ─────────────────────────────────────────── */
-    .meta-radar-panel {
-      background: var(--bg2);
-      border: 1px solid #1a2d1a;
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-    .meta-radar-panel .panel-header {
-      background: linear-gradient(90deg, #0a1a0a, #12121a);
-      border-bottom: 1px solid #1a2d1a;
-      padding: 10px 14px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .meta-tabs {
-      display: flex;
-      border-bottom: 1px solid var(--border);
-      background: #0d0d0d;
-    }
-    .meta-tab {
-      flex: 1;
-      padding: 6px 4px;
-      background: none;
-      border: none;
-      border-right: 1px solid var(--border);
-      color: var(--text-muted);
-      font-size: 11px;
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .meta-tab:last-child { border-right: none; }
-    .meta-tab.active { color: var(--green); background: rgba(0,255,136,0.05); font-weight: 700; }
-    .meta-tab:hover:not(.active) { color: var(--text); }
-    .meta-theme {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-    }
-    .meta-theme:last-child { border-bottom: none; }
-    .meta-theme:hover { background: #0d1a0d; }
-    .meta-rank { font-size: 16px; min-width: 24px; text-align: center; padding-top: 1px; }
-    .meta-info { flex: 1; min-width: 0; }
-    .meta-keyword {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .meta-stats { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-    .meta-examples { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
-
     .og-radar-panel {
       background: var(--bg2);
       border: 1px solid #3d2a00;
@@ -893,24 +837,6 @@
           </div>
         </div>
 
-        <!-- Meta Radar -->
-        <div class="meta-radar-panel">
-          <div class="panel-header">
-            <span class="panel-title">🧠 Meta Radar</span>
-            <span class="badge" id="meta-badge" title="Graduated tokens in window">-</span>
-          </div>
-          <div class="meta-tabs">
-            <button class="meta-tab" onclick="setMetaWindow('15m')">15m</button>
-            <button class="meta-tab active" onclick="setMetaWindow('2h')">2h</button>
-            <button class="meta-tab" onclick="setMetaWindow('6h')">6h</button>
-            <button class="meta-tab" onclick="setMetaWindow('8h')">8h</button>
-            <button class="meta-tab" onclick="setMetaWindow('12h')">12h</button>
-          </div>
-          <div id="meta-list" style="max-height:260px;overflow-y:auto">
-            <div class="empty" style="padding:20px">Analyzing graduated tokens — first data in ~2 min…</div>
-          </div>
-        </div>
-
         <!-- OG Hunter Radar -->
         <div class="og-radar-panel">
           <div class="panel-header">
@@ -1036,9 +962,6 @@
   let moversLastError = null
   let axiomCookieOk = null   // null = no axiom cookie configured, true/false = health
   let rugCount = 0
-  let metaData = []
-  let metaActiveWindow = '2h'
-  let metaTimer = null
 
   // ── AUTH ─────────────────────────────────────────────────────────
   function doLogin() {
@@ -1069,13 +992,11 @@
     document.getElementById('app').style.display = 'block'
     refresh()
     fetchMovers()
-    fetchMeta()
     // Retry after 8s in case first server poll hasn't completed yet
     setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 8_000)
     setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 20_000)
     refreshTimer = setInterval(refresh, 15000)
     moversTimer  = setInterval(fetchMovers, 30_000)
-    metaTimer    = setInterval(fetchMeta, 2 * 60_000)   // meta updates every 2 min
   }
 
   document.getElementById('login-input').addEventListener('keydown', e => {
@@ -1369,50 +1290,6 @@
         <div class="alert-time">${timeAgo(a.sentAt)}</div>
       </div>
     `).join('')
-  }
-
-  // ── META RADAR ────────────────────────────────────────────────────
-  function setMetaWindow(w) {
-    metaActiveWindow = w
-    document.querySelectorAll('.meta-tab').forEach(t => {
-      t.classList.toggle('active', t.textContent === w)
-    })
-    renderMeta()
-  }
-
-  async function fetchMeta() {
-    try {
-      metaData = await apiGet('/api/meta')
-      renderMeta()
-    } catch(e) {}
-  }
-
-  function renderMeta() {
-    const el = document.getElementById('meta-list')
-    if (!el) return
-    const win = metaData.find(w => w.label === metaActiveWindow)
-    const badgeEl = document.getElementById('meta-badge')
-    if (!win || win.themes.length === 0) {
-      const msg = !win || win.tokenCount === 0
-        ? `No graduated tokens in the last ${metaActiveWindow}.`
-        : `No repeating theme detected in last ${metaActiveWindow}.`
-      el.innerHTML = `<div class="empty" style="padding:20px">${msg}</div>`
-      if (badgeEl) badgeEl.textContent = win ? win.tokenCount : '-'
-      return
-    }
-    if (badgeEl) badgeEl.textContent = win.tokenCount
-    const RANKS = ['🥇','🥈','🥉','4️⃣','5️⃣']
-    el.innerHTML = win.themes.map((t, i) => {
-      const exStr = t.examples.map(e => `<span style="color:var(--text-dim)">$${esc(e.symbol)}</span>`).join(' · ')
-      return `<div class="meta-theme">
-        <div class="meta-rank">${RANKS[i] ?? `#${i+1}`}</div>
-        <div class="meta-info">
-          <div class="meta-keyword">${esc(t.keyword)}</div>
-          <div class="meta-stats">${t.tokenCount} tokens · avg MC ${fmtNum(t.avgMc)}</div>
-          <div class="meta-examples">${exStr}</div>
-        </div>
-      </div>`
-    }).join('')
   }
 
   // ── OG RADAR ──────────────────────────────────────────────────────

@@ -343,11 +343,6 @@ export function startServer(
     })
   })
 
-  // ── GET /api/meta ─────────────────────────────────────────────────────────
-  app.get('/api/meta', (_req: Request, res: Response) => {
-    res.json(moversPoller.getMetaAnalysis())
-  })
-
   // ── GET /api/debug/axiom?mint=XXX ─────────────────────────────────────────
   // Tests the Axiom pair-info call for a given mint. Returns raw response +
   // which pair address was used. Useful for diagnosing viewer count issues.
