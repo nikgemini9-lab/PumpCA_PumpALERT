@@ -45,6 +45,18 @@ const HELIUS_API = 'https://api.helius.xyz/v0'
 const DEX_API    = 'https://api.dexscreener.com/latest/dex/tokens'
 const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 
+// External discovery — data sources for old tokens currently moving
+const BIRDEYE_TOKENLIST_API = 'https://public-api.birdeye.so/defi/tokenlist'
+const DEX_BOOSTS_API        = 'https://api.dexscreener.com/token-boosts/active/v1'
+// Axiom movers endpoint candidates (probed at runtime with cookie auth)
+const AXIOM_MOVERS_CANDIDATES = [
+  'https://api6.axiom.trade/movers',
+  'https://api6.axiom.trade/pump/movers',
+  'https://api6.axiom.trade/tokens/movers',
+  'https://api6.axiom.trade/coins/movers',
+]
+const EXTERNAL_DISCOVER_MS  = 5 * 60_000  // every 5 minutes
+
 // Configurable via env vars — reduce for faster dormant alerts at higher Helius credit cost
 const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '5')  || 5)  * 60_000   // default 5 min
 const ENRICH_MS        = (parseInt(process.env.MOVERS_ENRICH_SECONDS ?? '60') || 60) * 1_000    // default 60s
@@ -199,8 +211,10 @@ export class MoversPoller extends EventEmitter {
   private graduationEmitted       = new Set<string>()
   // Mints already persisted to dormant_candidates table (avoid redundant writes)
   private dormantCandidatesSaved  = new Set<string>()
-  private discoverTimer: NodeJS.Timeout | null = null
-  private enrichTimer:   NodeJS.Timeout | null = null
+  private discoverTimer:  NodeJS.Timeout | null = null
+  private enrichTimer:    NodeJS.Timeout | null = null
+  private externalTimer:  NodeJS.Timeout | null = null
+  private axiomMoversUrl: string | null = null   // discovered at runtime via probe
   private lastPollAt: number | null = null
   private lastError:  string | null = null
   private _conn:      Connection | null = null  // reuse to avoid GET_SLOT overhead
@@ -234,14 +248,22 @@ export class MoversPoller extends EventEmitter {
       () => this.enrich().catch(err => console.error('[Movers] enrich error:', err?.message)),
       ENRICH_MS
     )
+    // External movers scanner — discovers OLD tokens currently pumping via Birdeye/DexScreener
+    // boosts/Axiom. Runs every 5 min. Catches tokens never seen in bonding-curve discovery.
+    this.discoverExternalMovers().catch(err => console.error('[Movers] external scan error:', err?.message))
+    this.externalTimer = setInterval(
+      () => this.discoverExternalMovers().catch(err => console.error('[Movers] external scan error:', err?.message)),
+      EXTERNAL_DISCOVER_MS
+    )
     console.log(
-      `[Movers] Poller started — discovery ${POLL_MS / 60_000} min, enrichment ${ENRICH_MS / 1_000} s`
+      `[Movers] Poller started — discovery ${POLL_MS / 60_000} min, enrichment ${ENRICH_MS / 1_000} s, external scan 5 min`
     )
   }
 
   stop(): void {
-    if (this.discoverTimer) { clearInterval(this.discoverTimer); this.discoverTimer = null }
-    if (this.enrichTimer)   { clearInterval(this.enrichTimer);   this.enrichTimer   = null }
+    if (this.discoverTimer)  { clearInterval(this.discoverTimer);  this.discoverTimer  = null }
+    if (this.enrichTimer)    { clearInterval(this.enrichTimer);    this.enrichTimer    = null }
+    if (this.externalTimer)  { clearInterval(this.externalTimer);  this.externalTimer  = null }
   }
 
   getMovers(): MoverEntry[] { return Array.from(this.movers.values()) }
@@ -251,6 +273,125 @@ export class MoversPoller extends EventEmitter {
       count:      this.movers.size,
       lastPollAt: this.lastPollAt,
       lastError:  this.lastError,
+    }
+  }
+
+  // ── External movers scan (every 5 min) ────────────────────────────────────
+  // Finds OLD tokens currently pumping via external data sources. This is the
+  // critical path for tokens like "Happy Birthday Solana" or DIEGO (1y) that
+  // are graduated, trading on Raydium, and thus invisible to bonding-curve discovery.
+
+  private async discoverExternalMovers(): Promise<void> {
+    const mints = new Set<string>()
+
+    // 1. Birdeye top gainers — returns tokens sorted by 24h price change (free tier works)
+    if (config.birdeye.apiKey) {
+      try {
+        const res = await axios.get(BIRDEYE_TOKENLIST_API, {
+          params: {
+            sort_by: 'v24hChangePercent',
+            sort_type: 'desc',
+            limit: 50,
+            min_liquidity: 100,
+          },
+          headers: {
+            'X-API-KEY': config.birdeye.apiKey,
+            'x-chain': 'solana',
+          },
+          timeout: 10_000,
+        })
+        for (const token of (res.data?.data?.tokens ?? [])) {
+          if (token.address && token.address !== WSOL) mints.add(token.address)
+        }
+        console.log(`[Movers] External: Birdeye returned ${res.data?.data?.tokens?.length ?? 0} gainers`)
+      } catch (err: any) {
+        console.warn('[Movers] External Birdeye scan error:', err?.message)
+      }
+    }
+
+    // 2. DexScreener active token boosts (free, no auth needed)
+    try {
+      const res = await axios.get(DEX_BOOSTS_API, {
+        timeout: 8_000,
+        headers: { 'User-Agent': 'PumpAlert/1.0' },
+      })
+      let added = 0
+      for (const boost of (res.data ?? [])) {
+        if (boost.chainId === 'solana' && boost.tokenAddress) {
+          mints.add(boost.tokenAddress)
+          added++
+        }
+      }
+      if (added > 0) console.log(`[Movers] External: DexScreener boosts returned ${added} Solana tokens`)
+    } catch (err: any) {
+      console.warn('[Movers] External DexScreener boosts error:', err?.message)
+    }
+
+    // 3. Axiom movers — probe for the endpoint on first call, then reuse
+    if (config.axiom.cookie) {
+      const axiomHeaders = {
+        Cookie: config.axiom.cookie,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        Accept: 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Origin: 'https://axiom.trade',
+        Referer: 'https://axiom.trade/',
+      }
+      // Probe for the movers endpoint on first run
+      if (!this.axiomMoversUrl) {
+        for (const candidate of AXIOM_MOVERS_CANDIDATES) {
+          try {
+            const r = await axios.get(candidate, {
+              headers: axiomHeaders, timeout: 6_000, validateStatus: s => s === 200,
+            })
+            if (Array.isArray(r.data) && r.data.length > 0) {
+              this.axiomMoversUrl = candidate
+              console.log(`[Movers] External: Axiom movers endpoint found: ${candidate}`)
+              break
+            }
+          } catch { /* try next */ }
+        }
+        if (!this.axiomMoversUrl) {
+          console.log('[Movers] External: Axiom movers endpoint not found (will retry next cycle)')
+        }
+      }
+      // Fetch from confirmed endpoint
+      if (this.axiomMoversUrl) {
+        try {
+          const res = await axios.get(this.axiomMoversUrl, {
+            headers: axiomHeaders, timeout: 8_000, validateStatus: s => s === 200,
+          })
+          for (const item of (res.data ?? [])) {
+            const mint = item.tokenAddress ?? item.mint ?? item.address
+            if (mint && mint !== WSOL) mints.add(mint)
+          }
+          console.log(`[Movers] External: Axiom movers returned ${res.data?.length ?? 0} tokens`)
+        } catch (err: any) {
+          console.warn('[Movers] External Axiom movers fetch error:', err?.message)
+          this.axiomMoversUrl = null  // re-probe next cycle
+        }
+      }
+    }
+
+    // Add newly-discovered mints to cache — enrichment will compute real age from DexScreener
+    const now = Date.now()
+    let added = 0
+    for (const mint of mints) {
+      if (!this.mintCache.has(mint)) {
+        this.mintCache.set(mint, {
+          name:            mint.slice(0, 8),
+          symbol:          '?',
+          firstSeen:       now,       // corrected to real pairCreatedAt by enrich()
+          lastTradeAt:     now,
+          graduated:       true,      // externally-discovered = likely graduated
+          metadataFetched: false,
+          seenCount:       2,         // skip single-poll metadata gate
+        })
+        added++
+      }
+    }
+    if (added > 0) {
+      console.log(`[Movers] External scan: added ${added} new mints (${mints.size} total from all sources)`)
     }
   }
 
@@ -343,7 +484,12 @@ export class MoversPoller extends EventEmitter {
       const mc = dex?.fdv ?? (curve ? computeMcUsd(curve, solPrice) : 0)
       if (!mc || mc < MIN_MC_USD) continue
 
-      // Creation timestamp: DexScreener pairCreatedAt is the best proxy
+      // Creation timestamp: DexScreener pairCreatedAt is the best proxy.
+      // Also correct rec.firstSeen so that eviction protection uses the real token age —
+      // externally-discovered tokens start with firstSeen = now until this correction runs.
+      if (dex?.pairCreatedAt && dex.pairCreatedAt < rec.firstSeen) {
+        rec.firstSeen = dex.pairCreatedAt
+      }
       const createdAt  = dex?.pairCreatedAt ?? rec.firstSeen
       const lastTradeAt = rec.lastTradeAt
       const ageMs    = now - createdAt
