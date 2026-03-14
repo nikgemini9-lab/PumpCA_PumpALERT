@@ -39,22 +39,18 @@ import * as db from './database'
 
 const PUMP_PROGRAM_STR = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
 const PUMP_PROGRAM     = new PublicKey(PUMP_PROGRAM_STR)
+// Pump.fun AMM (pumpswap) — where graduated pump.fun tokens trade after the bonding curve.
+// Watching this lets us catch OLD dormant tokens (any age) that are currently active.
+const PUMP_AMM_STR     = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'
 const WSOL             = 'So11111111111111111111111111111111111111112'
 
 const HELIUS_API = 'https://api.helius.xyz/v0'
 const DEX_API    = 'https://api.dexscreener.com/latest/dex/tokens'
 const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 
-// External discovery — data sources for old tokens currently moving
+// External discovery — fallback sources for old Raydium tokens (pre-pumpswap graduates)
 const BIRDEYE_TOKENLIST_API = 'https://public-api.birdeye.so/defi/tokenlist'
 const DEX_BOOSTS_API        = 'https://api.dexscreener.com/token-boosts/active/v1'
-// Axiom movers endpoint candidates (probed at runtime with cookie auth)
-const AXIOM_MOVERS_CANDIDATES = [
-  'https://api6.axiom.trade/movers',
-  'https://api6.axiom.trade/pump/movers',
-  'https://api6.axiom.trade/tokens/movers',
-  'https://api6.axiom.trade/coins/movers',
-]
 const EXTERNAL_DISCOVER_MS  = 5 * 60_000  // every 5 minutes
 
 // Configurable via env vars — reduce for faster dormant alerts at higher Helius credit cost
@@ -214,7 +210,6 @@ export class MoversPoller extends EventEmitter {
   private discoverTimer:  NodeJS.Timeout | null = null
   private enrichTimer:    NodeJS.Timeout | null = null
   private externalTimer:  NodeJS.Timeout | null = null
-  private axiomMoversUrl: string | null = null   // discovered at runtime via probe
   private lastPollAt: number | null = null
   private lastError:  string | null = null
   private _conn:      Connection | null = null  // reuse to avoid GET_SLOT overhead
@@ -327,52 +322,6 @@ export class MoversPoller extends EventEmitter {
       console.warn('[Movers] External DexScreener boosts error:', err?.message)
     }
 
-    // 3. Axiom movers — probe for the endpoint on first call, then reuse
-    if (config.axiom.cookie) {
-      const axiomHeaders = {
-        Cookie: config.axiom.cookie,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Origin: 'https://axiom.trade',
-        Referer: 'https://axiom.trade/',
-      }
-      // Probe for the movers endpoint on first run
-      if (!this.axiomMoversUrl) {
-        for (const candidate of AXIOM_MOVERS_CANDIDATES) {
-          try {
-            const r = await axios.get(candidate, {
-              headers: axiomHeaders, timeout: 6_000, validateStatus: s => s === 200,
-            })
-            if (Array.isArray(r.data) && r.data.length > 0) {
-              this.axiomMoversUrl = candidate
-              console.log(`[Movers] External: Axiom movers endpoint found: ${candidate}`)
-              break
-            }
-          } catch { /* try next */ }
-        }
-        if (!this.axiomMoversUrl) {
-          console.log('[Movers] External: Axiom movers endpoint not found (will retry next cycle)')
-        }
-      }
-      // Fetch from confirmed endpoint
-      if (this.axiomMoversUrl) {
-        try {
-          const res = await axios.get(this.axiomMoversUrl, {
-            headers: axiomHeaders, timeout: 8_000, validateStatus: s => s === 200,
-          })
-          for (const item of (res.data ?? [])) {
-            const mint = item.tokenAddress ?? item.mint ?? item.address
-            if (mint && mint !== WSOL) mints.add(mint)
-          }
-          console.log(`[Movers] External: Axiom movers returned ${res.data?.length ?? 0} tokens`)
-        } catch (err: any) {
-          console.warn('[Movers] External Axiom movers fetch error:', err?.message)
-          this.axiomMoversUrl = null  // re-probe next cycle
-        }
-      }
-    }
-
     // Add newly-discovered mints to cache — enrichment will compute real age from DexScreener
     const now = Date.now()
     let added = 0
@@ -423,6 +372,10 @@ export class MoversPoller extends EventEmitter {
   }
 
   // ── Discovery (5 min) — find new mints via Helius Enhanced Txs ──────────────
+  // Watches two pump.fun programs:
+  //   1. Bonding curve — pre-graduation SWAPs (new/young tokens)
+  //   2. Pump AMM     — post-graduation SWAPs (graduated tokens, any age)
+  // Together they cover every pump.fun token that has traded recently.
 
   private async discover(): Promise<void> {
     if (!this.heliusKey) {
@@ -430,7 +383,10 @@ export class MoversPoller extends EventEmitter {
       console.warn('[Movers] HELIUS_API_KEY not set — skipping discover')
       return
     }
-    await this.fetchRecentMints()
+    await Promise.all([
+      this.fetchRecentMints(PUMP_PROGRAM_STR, false),
+      this.fetchRecentMints(PUMP_AMM_STR,     true),
+    ])
   }
 
   // ── Enrichment (2 min) — refresh MC/price for all known mints ─────────────
@@ -511,12 +467,20 @@ export class MoversPoller extends EventEmitter {
         lastTradeAt > now - 24 * 60 * 60_000 ||
         (graduated && (dex?.txns?.h24?.buys ?? 0) > 0)
 
-      const isDormant =
+      const meetsThreshold =
         ageDays >= DORMANT_AGE_DAYS &&
         hasRecentActivity &&
         (Math.abs(change1h  ?? 0) >= DORMANT_MOVE_1H  ||
          Math.abs(change6h  ?? 0) >= DORMANT_MOVE_6H  ||
          Math.abs(change24h ?? 0) >= DORMANT_MOVE_24H)
+
+      // Pin isDormant = true for 2h after an alert fires so the token stays visible
+      // on the dashboard "Dormant" tab. Without this, the flag flips to false as soon
+      // as DexScreener's 1h candle rolls below the threshold — making it disappear from
+      // the UI immediately after the Telegram alert sends.
+      const lastDormantAt = this.dormantSeen.get(mint) ?? 0
+      const pinnedDormant  = now - lastDormantAt < 2 * 60 * 60_000
+      const isDormant      = meetsThreshold || pinnedDormant
 
       const entry: MoverEntry = {
         mint,
@@ -560,8 +524,7 @@ export class MoversPoller extends EventEmitter {
         db.upsertDormantCandidate(mint, entry.name, entry.symbol, createdAt).catch(() => {})
       }
 
-      const lastDormantAt = this.dormantSeen.get(mint) ?? 0
-      if (isDormant && now - lastDormantAt > 12 * 60 * 60_000) {
+      if (meetsThreshold && now - lastDormantAt > 12 * 60 * 60_000) {
         this.dormantSeen.set(mint, now)
         this.emit('dormant', entry)
         console.log(
@@ -589,11 +552,14 @@ export class MoversPoller extends EventEmitter {
   }
 
   // ── Step 1: Helius Enhanced Transactions ────────────────────────────────────
+  // Called twice per discovery cycle: once for the bonding curve (pre-graduation)
+  // and once for the pump AMM (post-graduation). Together they cover every
+  // pump.fun token that has traded recently, regardless of age.
 
-  private async fetchRecentMints(): Promise<void> {
+  private async fetchRecentMints(programStr: string, isGraduated: boolean): Promise<void> {
     try {
       const res = await axios.get(
-        `${HELIUS_API}/addresses/${PUMP_PROGRAM_STR}/transactions`,
+        `${HELIUS_API}/addresses/${programStr}/transactions`,
         {
           params: { 'api-key': this.heliusKey, limit: 100, type: 'SWAP' },
           timeout: 20_000,
@@ -602,6 +568,7 @@ export class MoversPoller extends EventEmitter {
 
       const txList: any[] = Array.isArray(res.data) ? res.data : []
       const now = Date.now()
+      let newMints = 0
 
       for (const tx of txList) {
         const txTs: number = tx.timestamp ? tx.timestamp * 1000 : now
@@ -613,6 +580,7 @@ export class MoversPoller extends EventEmitter {
           const existing = this.mintCache.get(mint)
           if (existing) {
             if (txTs > existing.lastTradeAt) existing.lastTradeAt = txTs
+            if (isGraduated) existing.graduated = true
             existing.seenCount++
           } else {
             this.mintCache.set(mint, {
@@ -620,10 +588,11 @@ export class MoversPoller extends EventEmitter {
               symbol:          '?',
               firstSeen:       txTs,
               lastTradeAt:     txTs,
-              graduated:       false,
+              graduated:       isGraduated,
               metadataFetched: false,
               seenCount:       1,
             })
+            newMints++
           }
         }
       }
@@ -652,10 +621,8 @@ export class MoversPoller extends EventEmitter {
         }
       }
 
-      console.log(
-        `[Movers] Helius: ${txList.length} txs → ` +
-        `${this.mintCache.size} mints in cache`
-      )
+      const label = isGraduated ? 'Pump AMM' : 'Bonding curve'
+      console.log(`[Movers] Helius ${label}: ${txList.length} txs, ${newMints} new mints → ${this.mintCache.size} total`)
     } catch (err: any) {
       const status = err?.response?.status ?? 'net'
       const msg    = `[${status}] ${err?.message}`
