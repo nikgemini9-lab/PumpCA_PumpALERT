@@ -57,8 +57,10 @@ const DEX_BOOSTS_API         = 'https://api.dexscreener.com/token-boosts/active/
 const AXIOM_TRENDING_URL     = 'https://api6.axiom.trade/meme-trending?timePeriod=1h'
 const EXTERNAL_DISCOVER_MS   = 5 * 60_000  // every 5 minutes
 
-// Configurable via env vars — reduce for faster dormant alerts at higher Helius credit cost
-const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '5')  || 5)  * 60_000   // default 5 min
+// Configurable via env vars — increase to save Helius credits at the cost of slower new-mint discovery.
+// Note: enrichment (DexScreener, no Helius) still runs every 60s regardless, so price data stays fresh.
+// Only new-mint *discovery* is delayed when this is raised.
+const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '20') || 20) * 60_000   // default 20 min (was 5)
 const ENRICH_MS        = (parseInt(process.env.MOVERS_ENRICH_SECONDS ?? '60') || 60) * 1_000    // default 60s
 const DORMANT_AGE_DAYS = 25
 const DORMANT_MOVE_1H  = 30           // % threshold
@@ -214,6 +216,9 @@ export class MoversPoller extends EventEmitter {
   private discoverTimer:  NodeJS.Timeout | null = null
   private enrichTimer:    NodeJS.Timeout | null = null
   private externalTimer:  NodeJS.Timeout | null = null
+  // Alternates which program is polled each discover() call to halve Helius Enhanced Tx credits.
+  // Cycle 1 → PUMP_PROGRAM (bonding curve), Cycle 2 → PUMP_AMM (graduated), repeat.
+  private discoverFlip = false
   private lastPollAt: number | null = null
   private lastError:  string | null = null
   private _conn:      Connection | null = null  // reuse to avoid GET_SLOT overhead
@@ -419,10 +424,11 @@ export class MoversPoller extends EventEmitter {
       console.warn('[Movers] HELIUS_API_KEY not set — skipping discover')
       return
     }
-    await Promise.all([
-      this.fetchRecentMints(PUMP_PROGRAM_STR, false),
-      this.fetchRecentMints(PUMP_AMM_STR,     true),
-    ])
+    // Alternate between programs each cycle to halve Helius Enhanced Tx API credit usage.
+    // Bonding curve (pre-graduation) and AMM (post-graduation) are each covered every 2 cycles.
+    const useAMM = this.discoverFlip
+    this.discoverFlip = !this.discoverFlip
+    await this.fetchRecentMints(useAMM ? PUMP_AMM_STR : PUMP_PROGRAM_STR, useAMM)
   }
 
   // ── Enrichment (2 min) — refresh MC/price for all known mints ─────────────
