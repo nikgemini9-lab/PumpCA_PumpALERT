@@ -873,6 +873,7 @@
               <th style="text-align:left;padding:4px 8px;font-weight:500">TIME</th>
               <th style="text-align:left;padding:4px 8px;font-weight:500">COIN</th>
               <th style="text-align:left;padding:4px 8px;font-weight:500">CA</th>
+              <th style="text-align:right;padding:4px 8px;font-weight:500">FLOOR</th>
               <th style="text-align:right;padding:4px 8px;font-weight:500">MC</th>
               <th style="text-align:right;padding:4px 8px;font-weight:500">AGE</th>
               <th style="text-align:right;padding:4px 8px;font-weight:500">1H%</th>
@@ -883,7 +884,7 @@
             </tr>
           </thead>
           <tbody id="dormant-history-tbody">
-            <tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text-dim)">Loading…</td></tr>
+            <tr><td colspan="11" style="text-align:center;padding:20px;color:var(--text-dim)">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1505,7 +1506,7 @@
       const wakeups = data.wakeups || []
       countEl.textContent = `${wakeups.length} wakeup${wakeups.length !== 1 ? 's' : ''}`
       if (wakeups.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text-dim)">No dormant wakeups in the last ${hours}h</td></tr>`
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--text-dim)">No dormant wakeups in the last ${hours}h</td></tr>`
         return
       }
       const fmtPct = n => n != null ? `<span style="color:${n>0?'#4caf50':n<0?'#f44336':'#888'}">${n>0?'+':''}${n.toFixed(1)}%</span>` : '<span style="color:#555">—</span>'
@@ -1525,8 +1526,11 @@
         const runnerHtml = w.runner_name
           ? `<span style="color:#7eb8f7;font-size:11px">🏃 ${escH(w.runner_name)}</span>`
           : '<span style="color:#555">—</span>'
-        const athHtml = w.athMc != null
+        const athHtml   = w.athMc != null
           ? `<span style="color:${w.athMc > w.marketCap ? '#4caf50' : '#888'}">${fmtMc(w.athMc)}</span>`
+          : '<span style="color:#555">—</span>'
+        const floorHtml = w.floorMc != null
+          ? `<span style="color:#ff9f1c;font-weight:600" title="Lowest MC seen before wakeup">${fmtMc(w.floorMc)}</span>`
           : '<span style="color:#555">—</span>'
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:5px 8px;color:var(--text-dim);white-space:nowrap">${fmtTime(w.detectedAt)}</td>
@@ -1538,6 +1542,7 @@
             <span class="mover-ca" onclick="copyMoverCA(this,'${mint}')" title="${mint}" style="font-size:11px;cursor:pointer">${shortMint}</span>
             <a href="https://x.com/search?q=${encodeURIComponent(mint)}&src=typed_query&f=live" target="_blank" title="Search CA on X" style="color:var(--text-dim);text-decoration:none;font-size:13px;margin-left:4px" onmouseover="this.style.color='#1d9bf0'" onmouseout="this.style.color='var(--text-dim)'">↗</a>
           </td>
+          <td style="padding:5px 8px;text-align:right">${floorHtml}</td>
           <td style="padding:5px 8px;text-align:right">${fmtMc(w.marketCap)}</td>
           <td style="padding:5px 8px;text-align:right;color:var(--text-dim)">${fmtAge(w.ageHours)}</td>
           <td style="padding:5px 8px;text-align:right">${fmtPct(w.change1h)}</td>
@@ -1548,7 +1553,7 @@
         </tr>`
       }).join('')
     } catch(e) {
-      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px;color:#f44336">Error loading history</td></tr>`
+      tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px;color:#f44336">Error loading history</td></tr>`
     }
   }
 

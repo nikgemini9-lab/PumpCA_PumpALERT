@@ -177,6 +177,7 @@ async function main(): Promise<void> {
         change1h:   mover.change1h,
         change6h:   mover.change6h,
         change24h:  mover.change24h,
+        floorMc:    mover.dormantFloorMc ?? null,
         runnerMint: runnerHit?.migratedMint ?? null,
         runnerName: runnerHit?.migratedName ?? null,
       }).catch(err => console.error('[Movers] Failed to persist dormant wakeup:', err))
@@ -192,7 +193,7 @@ async function main(): Promise<void> {
         `<code>${mover.mint}</code>`,
         ``,
         `⏳ Age: <b>${ageStr}</b>`,
-        `💎 MC: <b>${fmtMc(mover.marketCap)}</b>`,
+        `💎 MC: <b>${fmtMc(mover.marketCap)}</b>${mover.dormantFloorMc ? `  (floor <b>${fmtMc(mover.dormantFloorMc)}</b>)` : ''}`,
         `📈 1H: <b>${fmtPct(mover.change1h)}</b>  |  24H: <b>${fmtPct(mover.change24h)}</b>`,
         `⏱ Last traded: <b>${lastStr}</b>${viewerLine}${runnerLine}`,
         ``,

@@ -62,10 +62,14 @@ const EXTERNAL_DISCOVER_MS   = 5 * 60_000  // every 5 minutes
 // Only new-mint *discovery* is delayed when this is raised.
 const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '20') || 20) * 60_000   // default 20 min (was 5)
 const ENRICH_MS        = (parseInt(process.env.MOVERS_ENRICH_SECONDS ?? '60') || 60) * 1_000    // default 60s
-const DORMANT_AGE_DAYS = 25
-const DORMANT_MOVE_1H  = 30           // % threshold
-const DORMANT_MOVE_6H  = 60           // % threshold
-const DORMANT_MOVE_24H = 25           // % threshold — catches slow-build wakeups
+const DORMANT_AGE_DAYS    = 25
+const DORMANT_MOVE_1H     = 30        // % threshold
+const DORMANT_MOVE_6H     = 60        // % threshold
+const DORMANT_MOVE_24H    = 25        // % threshold — catches slow-build wakeups
+// Only alert/flag dormant tokens whose current MC is at or below this value.
+// Coins waking up from $125K are not useful entry opportunities — we want bottom catches.
+// Override with env: DORMANT_MAX_WAKE_MC (in USD)
+const DORMANT_MAX_WAKE_MC = parseInt(process.env.DORMANT_MAX_WAKE_MC ?? '5000') || 5000
 const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
 const MAX_MINT_CACHE   = 1000         // rolling window of known mints (larger = fewer evictions of old dormant tokens)
 const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
@@ -83,6 +87,7 @@ interface MintRecord {
   twitterHandle?:     string   // resolved from DexScreener socials or IPFS metadata
   communityFollowers?: number  // from Twitter widget API
   communityCheckedAt?: number  // epoch ms — last widget API check
+  floorMc?:           number   // lowest MC ever observed in-cache — used for dormant entry-quality filter
 }
 
 interface BondingCurveData {
@@ -125,6 +130,7 @@ export interface MoverEntry {
   txns24h:            number | null
   graduated:          boolean
   isDormant:          boolean
+  dormantFloorMc?:    number   // lowest MC ever seen in-cache — tells you how low the bottom was
   pairAddress?:       string   // Raydium pool address (graduated only) — used for Axiom viewer counts
   twitterHandle?:     string   // X / Twitter handle (without @)
   communityFollowers?: number  // follower count from widget API
@@ -498,6 +504,10 @@ export class MoversPoller extends EventEmitter {
       this.addSnap(mint, now, mc)
       const computed = this.computeChanges(mint, now)
 
+      // Track the floor (lowest MC ever seen in cache) — used to filter dormant alerts
+      // to only bottom catches (e.g. ≤ $5K), not coins already at $125K.
+      if (rec.floorMc === undefined || mc < rec.floorMc) rec.floorMc = mc
+
       const change1h  = dex?.priceChange?.h1  ?? computed.c1h
       const change6h  = dex?.priceChange?.h6  ?? computed.c6h
       const change24h = dex?.priceChange?.h24 ?? computed.c24h
@@ -512,6 +522,7 @@ export class MoversPoller extends EventEmitter {
       const meetsThreshold =
         ageDays >= DORMANT_AGE_DAYS &&
         hasRecentActivity &&
+        mc <= DORMANT_MAX_WAKE_MC &&   // only bottom catches — skip coins already at high MC
         (Math.abs(change1h  ?? 0) >= DORMANT_MOVE_1H  ||
          Math.abs(change6h  ?? 0) >= DORMANT_MOVE_6H  ||
          Math.abs(change24h ?? 0) >= DORMANT_MOVE_24H)
@@ -542,6 +553,7 @@ export class MoversPoller extends EventEmitter {
           : null,
         graduated,
         isDormant,
+        dormantFloorMc:     rec.floorMc,
         pairAddress:        dex?.pairAddress || undefined,
         twitterHandle:      rec.twitterHandle,
         communityFollowers: rec.communityFollowers,

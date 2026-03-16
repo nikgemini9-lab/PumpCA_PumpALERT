@@ -126,8 +126,9 @@ export async function initDatabase(): Promise<void> {
   await migrateColumn('tokens', 'axiom_dev_funded_sol', 'REAL')
   await migrateColumn('tokens', 'axiom_updated_at', 'INTEGER')
   await migrateColumn('tokens', 'price_updated_at', 'INTEGER')
-  await migrateColumn('dormant_wakeups', 'ath_mc', 'REAL')
-  await migrateColumn('dormant_wakeups', 'ath_at', 'INTEGER')
+  await migrateColumn('dormant_wakeups', 'ath_mc',   'REAL')
+  await migrateColumn('dormant_wakeups', 'ath_at',   'INTEGER')
+  await migrateColumn('dormant_wakeups', 'floor_mc', 'REAL')
 }
 
 async function migrateColumn(table: string, column: string, type: string): Promise<void> {
@@ -567,6 +568,7 @@ export async function addDormantWakeup(w: {
   change1h: number | null
   change6h: number | null
   change24h: number | null
+  floorMc?: number | null
   runnerMint?: string | null
   runnerName?: string | null
 }): Promise<void> {
@@ -574,13 +576,14 @@ export async function addDormantWakeup(w: {
   await client.execute({
     sql: `INSERT INTO dormant_wakeups
             (mint, name, symbol, market_cap, age_hours, change_1h, change_6h, change_24h,
-             runner_mint, runner_name, detected_at, ath_mc, ath_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             runner_mint, runner_name, detected_at, ath_mc, ath_at, floor_mc)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       w.mint, w.name, w.symbol, w.marketCap, w.ageHours,
       w.change1h ?? null, w.change6h ?? null, w.change24h ?? null,
       w.runnerMint ?? null, w.runnerName ?? null,
       now, w.marketCap, now,
+      w.floorMc ?? null,
     ],
   })
 }
@@ -611,8 +614,9 @@ export async function getDormantWakeups(hours = 24, limit = 100): Promise<Dorman
     runnerMint:  r.runner_mint as string | null,
     runnerName:  r.runner_name as string | null,
     detectedAt:  Number(r.detected_at),
-    athMc:       r.ath_mc != null ? Number(r.ath_mc) : null,
-    athAt:       r.ath_at != null ? Number(r.ath_at) : null,
+    athMc:   r.ath_mc   != null ? Number(r.ath_mc)   : null,
+    athAt:   r.ath_at   != null ? Number(r.ath_at)   : null,
+    floorMc: r.floor_mc != null ? Number(r.floor_mc) : null,
   }))
 }
 

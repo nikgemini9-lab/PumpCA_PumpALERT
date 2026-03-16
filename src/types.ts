@@ -164,8 +164,9 @@ export interface DormantWakeup {
   runnerMint: string | null
   runnerName: string | null
   detectedAt: number
-  athMc: number | null
-  athAt: number | null
+  athMc:   number | null
+  athAt:   number | null
+  floorMc: number | null  // lowest MC observed in-cache before wakeup
 }
 
 export interface OgRadarHit {
