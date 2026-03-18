@@ -51,13 +51,13 @@ const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/l
 // External discovery — fallback sources for old Raydium tokens (pre-pumpswap graduates)
 const BIRDEYE_TOKENLIST_API  = 'https://public-api.birdeye.so/defi/tokenlist'
 const DEX_BOOSTS_API         = 'https://api.dexscreener.com/token-boosts/active/v1'
-// Pump.fun public coins API — lists recently-active pump.fun tokens (no auth).
-// sorted by last_trade_timestamp catches tokens re-activating on their Raydium pool.
+// GeckoTerminal — free, no auth. Covers ALL Solana DEXes (Raydium, Orca, etc).
+// trending_pools returns up to 20 currently-hot pools regardless of token age.
+const GECKO_TRENDING_URL     = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools'
+// GeckoTerminal top gainers sorted by 1h price change — catches dormant sleepers waking up.
+const GECKO_GAINERS_URL      = 'https://api.geckoterminal.com/api/v2/networks/solana/pools?sort=h1_price_percent_change_desc&page=1'
+// Pump.fun coins API — recently-active pump.fun tokens, including some graduated ones.
 const PUMPFUN_COINS_API      = 'https://frontend-api.pump.fun/coins'
-// Axiom meme-trending — the exact endpoint powering the Axiom Movers tab.
-// Requires a valid AXIOM_COOKIE. Response fields: tokenAddress, tokenName, priceChange24h, etc.
-// Source: AxiomTradeAPI-py SDK (https://github.com/ChipaDevTeam/AxiomTradeAPI-py)
-const AXIOM_TRENDING_URL     = 'https://api6.axiom.trade/meme-trending?timePeriod=1h'
 const EXTERNAL_DISCOVER_MS   = 5 * 60_000  // every 5 minutes
 
 // Configurable via env vars — increase to save Helius credits at the cost of slower new-mint discovery.
@@ -297,86 +297,50 @@ export class MoversPoller extends EventEmitter {
   private async discoverExternalMovers(): Promise<void> {
     const mints = new Set<string>()
 
-    // 1. Birdeye top gainers — returns tokens sorted by 24h price change (free tier works)
-    if (config.birdeye.apiKey) {
-      try {
-        const res = await axios.get(BIRDEYE_TOKENLIST_API, {
-          params: {
-            sort_by: 'v24hChangePercent',
-            sort_type: 'desc',
-            limit: 50,
-            min_liquidity: 100,
-          },
-          headers: {
-            'X-API-KEY': config.birdeye.apiKey,
-            'x-chain': 'solana',
-          },
-          timeout: 10_000,
-        })
-        for (const token of (res.data?.data?.tokens ?? [])) {
-          if (token.address && token.address !== WSOL) mints.add(token.address)
-        }
-        console.log(`[Movers] External: Birdeye returned ${res.data?.data?.tokens?.length ?? 0} gainers`)
-      } catch (err: any) {
-        console.warn('[Movers] External Birdeye scan error:', err?.message)
-      }
+    // Helper: extract base token mint from GeckoTerminal pool entry.
+    // relationship id is formatted as "solana_<mint_address>"
+    const extractGeckoMint = (entry: any): string | undefined => {
+      const id: string = entry?.relationships?.base_token?.data?.id ?? ''
+      const addr = id.startsWith('solana_') ? id.slice(7) : ''
+      return addr && addr !== WSOL ? addr : undefined
     }
 
-    // 2. DexScreener active token boosts (free, no auth needed)
+    // 1. GeckoTerminal trending pools — free, no auth, covers ALL Solana DEXes including old Raydium.
+    //    This is the primary free source for dormant sleepers waking up on any DEX.
     try {
-      const res = await axios.get(DEX_BOOSTS_API, {
-        timeout: 8_000,
-        headers: { 'User-Agent': 'PumpAlert/1.0' },
+      const res = await axios.get(GECKO_TRENDING_URL, {
+        headers: { Accept: 'application/json;version=20230302' },
+        timeout: 10_000,
       })
       let added = 0
-      for (const boost of (res.data ?? [])) {
-        if (boost.chainId === 'solana' && boost.tokenAddress) {
-          mints.add(boost.tokenAddress)
-          added++
-        }
+      for (const pool of (res.data?.data ?? [])) {
+        const mint = extractGeckoMint(pool)
+        if (mint) { mints.add(mint); added++ }
       }
-      if (added > 0) console.log(`[Movers] External: DexScreener boosts returned ${added} Solana tokens`)
+      console.log(`[Movers] External: GeckoTerminal trending returned ${added} tokens`)
     } catch (err: any) {
-      console.warn('[Movers] External DexScreener boosts error:', err?.message)
+      console.warn('[Movers] External GeckoTerminal trending error:', err?.message)
     }
 
-    // 3. Axiom meme-trending — exact data source for the Axiom "Movers" tab (timePeriod=1h).
-    //    Requires a valid AXIOM_COOKIE. This is the highest-quality source for catching
-    //    old dormant tokens currently moving — activates automatically when cookie is valid.
-    if (config.axiom.cookie) {
-      try {
-        const res = await axios.get(AXIOM_TRENDING_URL, {
-          headers: {
-            Cookie: config.axiom.cookie,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            Accept: 'application/json, text/plain, */*',
-            Origin: 'https://axiom.trade',
-            Referer: 'https://axiom.trade/',
-          },
-          timeout: 8_000,
-          validateStatus: s => s === 200,
-        })
-        const items: any[] = Array.isArray(res.data) ? res.data : (res.data?.data ?? [])
-        let axiomAdded = 0
-        for (const item of items) {
-          const mint = item.tokenAddress ?? item.mint ?? item.address
-          if (mint && mint !== WSOL) { mints.add(mint); axiomAdded++ }
-        }
-        if (axiomAdded > 0) console.log(`[Movers] External: Axiom meme-trending returned ${axiomAdded} tokens`)
-      } catch (err: any) {
-        // 401/403 = cookie expired; log once so user knows to rotate it
-        const status = (err as any)?.response?.status
-        if (status === 401 || status === 403) {
-          console.warn('[Movers] External: Axiom meme-trending auth failed — rotate AXIOM_COOKIE to enable this source')
-        }
+    // 2. GeckoTerminal 1h top gainers — same API, sorted by h1 price change.
+    //    Catches tokens that are just starting to move (won't appear in trending yet).
+    try {
+      const res = await axios.get(GECKO_GAINERS_URL, {
+        headers: { Accept: 'application/json;version=20230302' },
+        timeout: 10_000,
+      })
+      let added = 0
+      for (const pool of (res.data?.data ?? [])) {
+        const mint = extractGeckoMint(pool)
+        if (mint) { mints.add(mint); added++ }
       }
+      console.log(`[Movers] External: GeckoTerminal 1h gainers returned ${added} tokens`)
+    } catch (err: any) {
+      console.warn('[Movers] External GeckoTerminal gainers error:', err?.message)
     }
 
-    // 4. Pump.fun public coins API (free, no auth) — sorts by last_trade_timestamp DESC.
-    //    Returns recently-active pump.fun tokens including old Raydium-graduated ones.
-    //    This is the only free source that can surface 2yr+ dormant Raydium tokens.
-    //    NOTE: pump.fun may not always update last_trade_timestamp for Raydium trades,
-    //    so this is a best-effort supplement — not a guarantee.
+    // 3. Pump.fun coins API — recently-active pump.fun tokens (free, no auth).
+    //    Covers tokens still on the bonding curve + recently-graduated.
     try {
       const res = await axios.get(PUMPFUN_COINS_API, {
         params: { sort: 'last_trade_timestamp', order: 'DESC', limit: 50, includeNsfw: false },
@@ -384,14 +348,41 @@ export class MoversPoller extends EventEmitter {
         timeout: 8_000,
       })
       const coins: any[] = Array.isArray(res.data) ? res.data : []
-      let pfAdded = 0
+      let added = 0
       for (const coin of coins) {
         const mint: string | undefined = coin.mint
-        if (mint && mint !== WSOL) { mints.add(mint); pfAdded++ }
+        if (mint && mint !== WSOL) { mints.add(mint); added++ }
       }
-      if (pfAdded > 0) console.log(`[Movers] External: pump.fun coins API returned ${pfAdded} tokens`)
+      if (added > 0) console.log(`[Movers] External: pump.fun coins API returned ${added} tokens`)
     } catch (err: any) {
       console.warn('[Movers] External pump.fun coins error:', err?.message)
+    }
+
+    // 4. DexScreener paid boosts — minor supplement, mostly promoted tokens.
+    try {
+      const res = await axios.get(DEX_BOOSTS_API, {
+        timeout: 8_000,
+        headers: { 'User-Agent': 'PumpAlert/1.0' },
+      })
+      for (const boost of (res.data ?? [])) {
+        if (boost.chainId === 'solana' && boost.tokenAddress) mints.add(boost.tokenAddress)
+      }
+    } catch { /* non-critical */ }
+
+    // 5. Birdeye — only used if API key is configured (paid)
+    if (config.birdeye.apiKey) {
+      try {
+        const res = await axios.get(BIRDEYE_TOKENLIST_API, {
+          params: { sort_by: 'v24hChangePercent', sort_type: 'desc', limit: 50, min_liquidity: 100 },
+          headers: { 'X-API-KEY': config.birdeye.apiKey, 'x-chain': 'solana' },
+          timeout: 10_000,
+        })
+        for (const token of (res.data?.data?.tokens ?? [])) {
+          if (token.address && token.address !== WSOL) mints.add(token.address)
+        }
+      } catch (err: any) {
+        console.warn('[Movers] External Birdeye error:', err?.message)
+      }
     }
 
     // Add newly-discovered mints to cache — enrichment will compute real age from DexScreener
