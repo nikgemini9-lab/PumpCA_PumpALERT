@@ -53,14 +53,16 @@ async function ping(url: string, opts: {
   data?: object
   headers?: Record<string, string>
   timeout?: number
+  okStatuses?: number[]  // extra HTTP codes to treat as "ok" (e.g. 429 rate limit = reachable)
 } = {}): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
   const t0 = Date.now()
+  const extraOk = new Set(opts.okStatuses ?? [])
   try {
     await axios({ method: opts.method ?? 'get', url, data: opts.data, headers: opts.headers, timeout: opts.timeout ?? 7_000 })
     return { ok: true, latencyMs: Date.now() - t0 }
   } catch (err: any) {
     const status: number | undefined = err?.response?.status
-    // 4xx (bad auth etc.) = server reachable, just not authed — still "reachable" but mark error
+    if (status && extraOk.has(status)) return { ok: true, latencyMs: Date.now() - t0 }
     return { ok: false, latencyMs: Date.now() - t0, error: status ? `HTTP ${status}` : err?.message?.slice(0, 60) }
   }
 }
@@ -91,10 +93,11 @@ async function refreshApiStatus(): Promise<ApiCheck[]> {
     add({ name: 'Telegram Bot', env: 'TELEGRAM_BOT_TOKEN', configured: !!config.telegram.botToken, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
   }
 
-  // 3. GeckoTerminal — free, always-on
+  // 3. GeckoTerminal — free, always-on (429 = rate limited but reachable = still ok)
   {
     const r = await ping('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools', {
-      headers: { Accept: 'application/json;version=20230302' },
+      headers: { Accept: 'application/json' },
+      okStatuses: [429],
     })
     add({ name: 'GeckoTerminal', configured: true, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
   }

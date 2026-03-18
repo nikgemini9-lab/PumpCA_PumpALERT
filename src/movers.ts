@@ -54,8 +54,8 @@ const DEX_BOOSTS_API         = 'https://api.dexscreener.com/token-boosts/active/
 // GeckoTerminal — free, no auth. Covers ALL Solana DEXes (Raydium, Orca, etc).
 // trending_pools returns up to 20 currently-hot pools regardless of token age.
 const GECKO_TRENDING_URL     = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools'
-// GeckoTerminal top gainers sorted by 1h price change — catches dormant sleepers waking up.
-const GECKO_GAINERS_URL      = 'https://api.geckoterminal.com/api/v2/networks/solana/pools?sort=h1_price_percent_change_desc&page=1'
+// GeckoTerminal top gainers sorted by 6h price change (h1 not supported as sort key).
+const GECKO_GAINERS_URL      = 'https://api.geckoterminal.com/api/v2/networks/solana/pools?sort=h6_price_percent_change_desc&page=1'
 // Pump.fun coins API — recently-active pump.fun tokens, including some graduated ones.
 const PUMPFUN_COINS_API      = 'https://frontend-api.pump.fun/coins'
 const EXTERNAL_DISCOVER_MS   = 5 * 60_000  // every 5 minutes
@@ -309,7 +309,7 @@ export class MoversPoller extends EventEmitter {
     //    This is the primary free source for dormant sleepers waking up on any DEX.
     try {
       const res = await axios.get(GECKO_TRENDING_URL, {
-        headers: { Accept: 'application/json;version=20230302' },
+        headers: { Accept: 'application/json' },
         timeout: 10_000,
       })
       let added = 0
@@ -322,11 +322,11 @@ export class MoversPoller extends EventEmitter {
       console.warn('[Movers] External GeckoTerminal trending error:', err?.message)
     }
 
-    // 2. GeckoTerminal 1h top gainers — same API, sorted by h1 price change.
+    // 2. GeckoTerminal 6h top gainers — sorted by h6 price change (h1 not a valid sort key).
     //    Catches tokens that are just starting to move (won't appear in trending yet).
     try {
       const res = await axios.get(GECKO_GAINERS_URL, {
-        headers: { Accept: 'application/json;version=20230302' },
+        headers: { Accept: 'application/json' },
         timeout: 10_000,
       })
       let added = 0
@@ -334,7 +334,7 @@ export class MoversPoller extends EventEmitter {
         const mint = extractGeckoMint(pool)
         if (mint) { mints.add(mint); added++ }
       }
-      console.log(`[Movers] External: GeckoTerminal 1h gainers returned ${added} tokens`)
+      console.log(`[Movers] External: GeckoTerminal 6h gainers returned ${added} tokens`)
     } catch (err: any) {
       console.warn('[Movers] External GeckoTerminal gainers error:', err?.message)
     }
