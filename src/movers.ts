@@ -51,6 +51,9 @@ const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/l
 // External discovery — fallback sources for old Raydium tokens (pre-pumpswap graduates)
 const BIRDEYE_TOKENLIST_API  = 'https://public-api.birdeye.so/defi/tokenlist'
 const DEX_BOOSTS_API         = 'https://api.dexscreener.com/token-boosts/active/v1'
+// Pump.fun public coins API — lists recently-active pump.fun tokens (no auth).
+// sorted by last_trade_timestamp catches tokens re-activating on their Raydium pool.
+const PUMPFUN_COINS_API      = 'https://frontend-api.pump.fun/coins'
 // Axiom meme-trending — the exact endpoint powering the Axiom Movers tab.
 // Requires a valid AXIOM_COOKIE. Response fields: tokenAddress, tokenName, priceChange24h, etc.
 // Source: AxiomTradeAPI-py SDK (https://github.com/ChipaDevTeam/AxiomTradeAPI-py)
@@ -367,6 +370,28 @@ export class MoversPoller extends EventEmitter {
           console.warn('[Movers] External: Axiom meme-trending auth failed — rotate AXIOM_COOKIE to enable this source')
         }
       }
+    }
+
+    // 4. Pump.fun public coins API (free, no auth) — sorts by last_trade_timestamp DESC.
+    //    Returns recently-active pump.fun tokens including old Raydium-graduated ones.
+    //    This is the only free source that can surface 2yr+ dormant Raydium tokens.
+    //    NOTE: pump.fun may not always update last_trade_timestamp for Raydium trades,
+    //    so this is a best-effort supplement — not a guarantee.
+    try {
+      const res = await axios.get(PUMPFUN_COINS_API, {
+        params: { sort: 'last_trade_timestamp', order: 'DESC', limit: 50, includeNsfw: false },
+        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+        timeout: 8_000,
+      })
+      const coins: any[] = Array.isArray(res.data) ? res.data : []
+      let pfAdded = 0
+      for (const coin of coins) {
+        const mint: string | undefined = coin.mint
+        if (mint && mint !== WSOL) { mints.add(mint); pfAdded++ }
+      }
+      if (pfAdded > 0) console.log(`[Movers] External: pump.fun coins API returned ${pfAdded} tokens`)
+    } catch (err: any) {
+      console.warn('[Movers] External pump.fun coins error:', err?.message)
     }
 
     // Add newly-discovered mints to cache — enrichment will compute real age from DexScreener
