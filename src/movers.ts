@@ -522,10 +522,15 @@ export class MoversPoller extends EventEmitter {
       const meetsThreshold =
         ageDays >= DORMANT_AGE_DAYS &&
         hasRecentActivity &&
-        mc <= DORMANT_MAX_WAKE_MC &&   // only bottom catches — skip coins already at high MC
-        (Math.abs(change1h  ?? 0) >= DORMANT_MOVE_1H  ||
-         Math.abs(change6h  ?? 0) >= DORMANT_MOVE_6H  ||
-         Math.abs(change24h ?? 0) >= DORMANT_MOVE_24H)
+        // Use the floor MC (lowest we ever observed) to qualify bottom catches.
+        // Current MC can be higher than floor if the coin already started pumping —
+        // that's fine, we still want to catch it. Unknown floor (first cycle) = allow.
+        (!rec.floorMc || rec.floorMc <= DORMANT_MAX_WAKE_MC) &&
+        // Only upward movement counts as a wakeup — no Math.abs().
+        // A coin crashing -40% in 1h is a rug, not a sleeper revival.
+        ((change1h  ?? 0) >= DORMANT_MOVE_1H  ||
+         (change6h  ?? 0) >= DORMANT_MOVE_6H  ||
+         (change24h ?? 0) >= DORMANT_MOVE_24H)
 
       // Pin isDormant = true for 2h after an alert fires so the token stays visible
       // on the dashboard "Dormant" tab. Without this, the flag flips to false as soon
