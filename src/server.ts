@@ -22,6 +22,7 @@
 
 import express, { Request, Response, NextFunction } from 'express'
 import path from 'path'
+import axios from 'axios'
 import { config } from './config'
 import * as db from './database'
 import { MonitorStatus } from './types'
@@ -30,6 +31,122 @@ import { WalletPoller, SKIP_MINTS } from './walletPoller'
 import { syncWebhook, parseWebhookTransfers } from './heliusWebhook'
 import { MoversPoller } from './movers'
 import type { AxiomPoller } from './axiomPoller'
+
+// ── API health check (cached, refreshed every 5 min) ──────────────────────────
+
+interface ApiCheck {
+  name:         string
+  env?:         string          // env var name that enables this service (omit = always-on)
+  configured:   boolean         // key/token is present
+  ok:           boolean | null  // null = not yet checked or not configured
+  latencyMs:    number | null
+  error?:       string
+  checkedAt:    number | null   // epoch ms
+}
+
+let _apiStatusCache: ApiCheck[] = []
+let _apiStatusTs = 0
+const API_STATUS_TTL = 5 * 60_000  // 5 minutes
+
+async function ping(url: string, opts: {
+  method?: 'get' | 'post'
+  data?: object
+  headers?: Record<string, string>
+  timeout?: number
+} = {}): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+  const t0 = Date.now()
+  try {
+    await axios({ method: opts.method ?? 'get', url, data: opts.data, headers: opts.headers, timeout: opts.timeout ?? 7_000 })
+    return { ok: true, latencyMs: Date.now() - t0 }
+  } catch (err: any) {
+    const status: number | undefined = err?.response?.status
+    // 4xx (bad auth etc.) = server reachable, just not authed — still "reachable" but mark error
+    return { ok: false, latencyMs: Date.now() - t0, error: status ? `HTTP ${status}` : err?.message?.slice(0, 60) }
+  }
+}
+
+async function refreshApiStatus(): Promise<ApiCheck[]> {
+  const now = Date.now()
+  const checks: ApiCheck[] = []
+
+  // Helper to push a result
+  const add = (base: Omit<ApiCheck, 'checkedAt'>) =>
+    checks.push({ ...base, checkedAt: now })
+
+  // 1. Helius RPC
+  if (config.solana.heliusApiKey) {
+    const r = await ping(config.solana.rpcUrl, {
+      method: 'post',
+      data: { jsonrpc: '2.0', id: 1, method: 'getHealth' },
+      headers: { 'Content-Type': 'application/json' },
+    })
+    add({ name: 'Helius RPC', env: 'HELIUS_API_KEY', configured: true, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
+  } else {
+    add({ name: 'Helius RPC', env: 'HELIUS_API_KEY', configured: false, ok: null, latencyMs: null })
+  }
+
+  // 2. Telegram Bot
+  {
+    const r = await ping(`https://api.telegram.org/bot${config.telegram.botToken}/getMe`, { timeout: 6_000 })
+    add({ name: 'Telegram Bot', env: 'TELEGRAM_BOT_TOKEN', configured: !!config.telegram.botToken, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
+  }
+
+  // 3. GeckoTerminal — free, always-on
+  {
+    const r = await ping('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools', {
+      headers: { Accept: 'application/json;version=20230302' },
+    })
+    add({ name: 'GeckoTerminal', configured: true, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
+  }
+
+  // 4. DexScreener — free, always-on
+  {
+    const r = await ping('https://api.dexscreener.com/token-boosts/active/v1', { timeout: 6_000 })
+    add({ name: 'DexScreener', configured: true, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
+  }
+
+  // 5. pump.fun API — free, always-on
+  {
+    const r = await ping('https://frontend-api.pump.fun/coins?limit=1&sort=last_trade_timestamp&order=DESC', {
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+      timeout: 6_000,
+    })
+    add({ name: 'pump.fun API', configured: true, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
+  }
+
+  // 6. Birdeye — optional paid key
+  if (config.birdeye.apiKey) {
+    const r = await ping('https://public-api.birdeye.so/defi/tokenlist?limit=1&sort_by=v24hChangePercent&sort_type=desc', {
+      headers: { 'X-API-KEY': config.birdeye.apiKey, 'x-chain': 'solana' },
+      timeout: 7_000,
+    })
+    add({ name: 'Birdeye', env: 'BIRDEYE_API_KEY', configured: true, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
+  } else {
+    add({ name: 'Birdeye', env: 'BIRDEYE_API_KEY', configured: false, ok: null, latencyMs: null })
+  }
+
+  // 7. CoinMarketCap — optional paid key
+  if (config.cmc.apiKey) {
+    const r = await ping('https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit=1', {
+      headers: { 'X-CMC_PRO_API_KEY': config.cmc.apiKey },
+      timeout: 7_000,
+    })
+    add({ name: 'CMC (SOL price)', env: 'CMC_API_KEY', configured: true, ok: r.ok, latencyMs: r.latencyMs, error: r.error })
+  } else {
+    add({ name: 'CMC (SOL price)', env: 'CMC_API_KEY', configured: false, ok: null, latencyMs: null })
+  }
+
+  _apiStatusCache = checks
+  _apiStatusTs = now
+  return checks
+}
+
+function getApiStatusCached(): Promise<ApiCheck[]> {
+  if (Date.now() - _apiStatusTs < API_STATUS_TTL && _apiStatusCache.length > 0) {
+    return Promise.resolve(_apiStatusCache)
+  }
+  return refreshApiStatus()
+}
 
 export function startServer(
   getStatus: () => Promise<MonitorStatus>,
@@ -375,6 +492,17 @@ export function startServer(
   app.get('/api/users', (_req: Request, res: Response) => {
     res.json(config.telegram.users.map(u => u.name))
   })
+
+  // ── GET /api/api-status ───────────────────────────────────────────────────
+  // Returns live health of every external API (cached 5 min). No slow startup.
+  app.get('/api/api-status', async (_req: Request, res: Response) => {
+    const checks = await getApiStatusCached()
+    res.json({ checks, cachedAt: new Date(_apiStatusTs).toISOString() })
+  })
+
+  // Warm the cache in background so first dashboard load is instant
+  setTimeout(() => refreshApiStatus().catch(() => {}), 3_000)
+  setInterval(() => refreshApiStatus().catch(() => {}), API_STATUS_TTL)
 
   app.listen(config.port, () => {
     console.log(`[Server] Listening on port ${config.port}`)

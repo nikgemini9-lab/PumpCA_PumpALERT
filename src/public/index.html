@@ -515,6 +515,76 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+    /* ── API STATUS FOOTER ───────────────────────────────────── */
+    #api-footer {
+      border-top: 1px solid var(--border);
+      background: var(--bg2);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .api-footer-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    .api-pills {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      flex: 1;
+    }
+
+    .api-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 9px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid;
+      cursor: default;
+      position: relative;
+    }
+
+    .api-pill.ok       { color: var(--green); border-color: #00d08440; background: #00d08410; }
+    .api-pill.error    { color: var(--red);   border-color: #ff475740; background: #ff475710; }
+    .api-pill.inactive { color: var(--text-muted); border-color: var(--text-muted); background: transparent; opacity: 0.55; }
+    .api-pill.loading  { color: var(--text-dim); border-color: var(--border); background: transparent; }
+
+    .api-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .api-pill.ok    .api-dot { background: var(--green); animation: pulse 2s infinite; }
+    .api-pill.error .api-dot { background: var(--red); }
+    .api-pill.inactive .api-dot { background: var(--text-muted); }
+    .api-pill.loading  .api-dot { background: var(--border); }
+
+    .api-latency {
+      font-size: 9px;
+      opacity: 0.7;
+      font-weight: 400;
+    }
+
+    .api-footer-ts {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
     /* ── TOAST ───────────────────────────────────────────────── */
     #toast {
       position: fixed;
@@ -934,6 +1004,15 @@
     </div><!-- /movers-section -->
 
   </main>
+
+  <!-- ── API STATUS FOOTER ────────────────────────────────────────── -->
+  <footer id="api-footer">
+    <span class="api-footer-label">API Status</span>
+    <div class="api-pills" id="api-pills">
+      <span class="api-pill loading"><span class="api-dot"></span>checking…</span>
+    </div>
+    <span class="api-footer-ts" id="api-footer-ts"></span>
+  </footer>
 </div>
 
 <div id="toast"></div>
@@ -998,6 +1077,8 @@
     refreshTimer = setInterval(refresh, 15000)
     moversTimer  = setInterval(fetchMovers, 30_000)
     setInterval(loadDormantHistory, 2 * 60_000) // refresh dormant history every 2 min
+    loadApiStatus()
+    setInterval(loadApiStatus, 3 * 60_000) // refresh API status every 3 min
   }
 
   document.getElementById('login-input').addEventListener('keydown', e => {
@@ -1726,6 +1807,41 @@
         osc.stop(t + 0.2)
       })
     } catch { /* AudioContext blocked until user gesture — silent fail */ }
+  }
+
+  // ── API STATUS FOOTER ───────────────────────────────────────────────
+  async function loadApiStatus() {
+    try {
+      const data = await apiGet('/api/api-status')
+      const pills = document.getElementById('api-pills')
+      const ts    = document.getElementById('api-footer-ts')
+      if (!pills) return
+
+      pills.innerHTML = data.checks.map(c => {
+        let cls, dot
+        if (!c.configured) {
+          cls = 'inactive'; dot = ''
+        } else if (c.ok === null) {
+          cls = 'loading'; dot = ''
+        } else if (c.ok) {
+          cls = 'ok'; dot = ''
+        } else {
+          cls = 'error'; dot = ''
+        }
+
+        const latency = c.ok && c.latencyMs != null
+          ? `<span class="api-latency">${c.latencyMs}ms</span>` : ''
+        const title = c.error
+          ? `title="${escH(c.error)}"` : (c.configured ? '' : `title="Set ${c.env ?? ''} to enable"`)
+
+        return `<span class="api-pill ${cls}" ${title}><span class="api-dot"></span>${escH(c.name)}${latency}</span>`
+      }).join('')
+
+      if (data.cachedAt && ts) {
+        const age = Math.round((Date.now() - new Date(data.cachedAt).getTime()) / 1000)
+        ts.textContent = `checked ${age < 10 ? 'just now' : age + 's ago'}`
+      }
+    } catch { /* non-critical */ }
   }
 
   // ── INIT ────────────────────────────────────────────────────────────
