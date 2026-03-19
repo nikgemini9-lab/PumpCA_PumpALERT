@@ -67,6 +67,7 @@ const EXTERNAL_DISCOVER_MS   = 2 * 60_000  // every 2 minutes
 const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '20') || 20) * 60_000   // default 20 min (was 5)
 const ENRICH_MS        = (parseInt(process.env.MOVERS_ENRICH_SECONDS ?? '60') || 60) * 1_000    // default 60s
 const DORMANT_AGE_DAYS    = 25
+const DORMANT_MOVE_5M     = 5         // % — first-candle signal: +5% in last 5 min
 const DORMANT_MOVE_1H     = 10        // % — early signal: +10% in last hour
 const DORMANT_MOVE_6H     = 25        // % — sustained move: +25% over 6h
 const DORMANT_MOVE_24H    = 15        // % — slow-build: +15% over 24h
@@ -529,6 +530,7 @@ export class MoversPoller extends EventEmitter {
       // Track floor MC (informational — shown on dashboard, not used for alert gating)
       if (rec.floorMc === undefined || mc < rec.floorMc) rec.floorMc = mc
 
+      const change5m  = dex?.priceChange?.m5  ?? computed.c5m
       const change1h  = dex?.priceChange?.h1  ?? computed.c1h
       const change6h  = dex?.priceChange?.h6  ?? computed.c6h
       const change24h = dex?.priceChange?.h24 ?? computed.c24h
@@ -550,8 +552,10 @@ export class MoversPoller extends EventEmitter {
         hasRecentActivity &&                   // actively trading now
         mc <= DORMANT_MAX_WAKE_MC &&           // still at low MC — good entry point (<$10K)
         hasBuyPressure &&                      // net positive buy volume
-        // Upward price movement only — crash/rug is not a wakeup
-        ((change1h  ?? 0) >= DORMANT_MOVE_1H  ||
+        // Upward price movement only — crash/rug is not a wakeup.
+        // 5m is the primary sensitivity window: catches the first candle of a wakeup.
+        ((change5m  ?? 0) >= DORMANT_MOVE_5M  ||
+         (change1h  ?? 0) >= DORMANT_MOVE_1H  ||
          (change6h  ?? 0) >= DORMANT_MOVE_6H  ||
          (change24h ?? 0) >= DORMANT_MOVE_24H)
 
