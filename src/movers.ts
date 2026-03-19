@@ -54,11 +54,12 @@ const DEX_BOOSTS_API         = 'https://api.dexscreener.com/token-boosts/active/
 // GeckoTerminal — free, no auth. Covers ALL Solana DEXes (Raydium, Orca, etc).
 // trending_pools returns up to 20 currently-hot pools regardless of token age.
 const GECKO_TRENDING_URL     = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools'
-// GeckoTerminal top gainers sorted by 6h price change (h1 not supported as sort key).
-const GECKO_GAINERS_URL      = 'https://api.geckoterminal.com/api/v2/networks/solana/pools?sort=h6_price_percent_change_desc&page=1'
+// GeckoTerminal top pools by 24h volume — h24_volume_usd_desc is a confirmed-valid sort.
+// High volume reliably correlates with active movers. Paginate 3 pages = 60 pools.
+const GECKO_VOLUME_BASE      = 'https://api.geckoterminal.com/api/v2/networks/solana/pools?sort=h24_volume_usd_desc'
 // Pump.fun coins API — recently-active pump.fun tokens, including some graduated ones.
 const PUMPFUN_COINS_API      = 'https://frontend-api.pump.fun/coins'
-const EXTERNAL_DISCOVER_MS   = 5 * 60_000  // every 5 minutes
+const EXTERNAL_DISCOVER_MS   = 2 * 60_000  // every 2 minutes
 
 // Configurable via env vars — increase to save Helius credits at the cost of slower new-mint discovery.
 // Note: enrichment (DexScreener, no Helius) still runs every 60s regardless, so price data stays fresh.
@@ -69,10 +70,11 @@ const DORMANT_AGE_DAYS    = 25
 const DORMANT_MOVE_1H     = 30        // % threshold
 const DORMANT_MOVE_6H     = 60        // % threshold
 const DORMANT_MOVE_24H    = 25        // % threshold — catches slow-build wakeups
-// Only alert/flag dormant tokens whose current MC is at or below this value.
-// Coins waking up from $125K are not useful entry opportunities — we want bottom catches.
+// Floor MC threshold — only alert if the lowest MC we observed is below this.
+// Prevents re-alerting on already-established tokens (e.g. waking from $200K).
+// $75K catches the common pattern: dormant token pumps from $1-10K to $50-75K range.
 // Override with env: DORMANT_MAX_WAKE_MC (in USD)
-const DORMANT_MAX_WAKE_MC = parseInt(process.env.DORMANT_MAX_WAKE_MC ?? '5000') || 5000
+const DORMANT_MAX_WAKE_MC = parseInt(process.env.DORMANT_MAX_WAKE_MC ?? '75000') || 75000
 const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
 const MAX_MINT_CACHE   = 1000         // rolling window of known mints (larger = fewer evictions of old dormant tokens)
 const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
@@ -322,21 +324,26 @@ export class MoversPoller extends EventEmitter {
       console.warn('[Movers] External GeckoTerminal trending error:', err?.message)
     }
 
-    // 2. GeckoTerminal 6h top gainers — sorted by h6 price change (h1 not a valid sort key).
-    //    Catches tokens that are just starting to move (won't appear in trending yet).
-    try {
-      const res = await axios.get(GECKO_GAINERS_URL, {
-        headers: { Accept: 'application/json' },
-        timeout: 10_000,
-      })
-      let added = 0
-      for (const pool of (res.data?.data ?? [])) {
-        const mint = extractGeckoMint(pool)
-        if (mint) { mints.add(mint); added++ }
+    // 2. GeckoTerminal top-volume pools (pages 1-3 = 60 pools) — h24_volume_usd_desc is
+    //    a confirmed-valid sort. High 24h volume reliably captures active movers on any DEX.
+    {
+      let volAdded = 0
+      for (let page = 1; page <= 3; page++) {
+        try {
+          const res = await axios.get(`${GECKO_VOLUME_BASE}&page=${page}`, {
+            headers: { Accept: 'application/json' },
+            timeout: 10_000,
+          })
+          for (const pool of (res.data?.data ?? [])) {
+            const mint = extractGeckoMint(pool)
+            if (mint) { mints.add(mint); volAdded++ }
+          }
+        } catch (err: any) {
+          console.warn(`[Movers] External GeckoTerminal vol page ${page} error:`, err?.message)
+          break
+        }
       }
-      console.log(`[Movers] External: GeckoTerminal 6h gainers returned ${added} tokens`)
-    } catch (err: any) {
-      console.warn('[Movers] External GeckoTerminal gainers error:', err?.message)
+      console.log(`[Movers] External: GeckoTerminal volume scan returned ${volAdded} tokens`)
     }
 
     // 3. Pump.fun coins API — recently-active pump.fun tokens (free, no auth).
@@ -520,8 +527,11 @@ export class MoversPoller extends EventEmitter {
       this.addSnap(mint, now, mc)
       const computed = this.computeChanges(mint, now)
 
-      // Track the floor (lowest MC ever seen in cache) — used to filter dormant alerts
-      // to only bottom catches (e.g. ≤ $5K), not coins already at $125K.
+      // Track the floor (lowest MC ever seen in cache).
+      // Save the PRE-UPDATE value for the dormant check below — if this is the first
+      // enrichment cycle, prevFloorMc is undefined and the check uses !prevFloorMc = true
+      // (allows the alert even for tokens discovered after they started pumping).
+      const prevFloorMc = rec.floorMc
       if (rec.floorMc === undefined || mc < rec.floorMc) rec.floorMc = mc
 
       const change1h  = dex?.priceChange?.h1  ?? computed.c1h
@@ -538,10 +548,11 @@ export class MoversPoller extends EventEmitter {
       const meetsThreshold =
         ageDays >= DORMANT_AGE_DAYS &&
         hasRecentActivity &&
-        // Use the floor MC (lowest we ever observed) to qualify bottom catches.
-        // Current MC can be higher than floor if the coin already started pumping —
-        // that's fine, we still want to catch it. Unknown floor (first cycle) = allow.
-        (!rec.floorMc || rec.floorMc <= DORMANT_MAX_WAKE_MC) &&
+        // Use the pre-update floor MC to qualify bottom catches.
+        // prevFloorMc is undefined on the very first enrichment cycle → allows the
+        // alert for tokens discovered after they started pumping (most external discoveries).
+        // On subsequent cycles it reflects the lowest MC we've actually observed.
+        (!prevFloorMc || prevFloorMc <= DORMANT_MAX_WAKE_MC) &&
         // Only upward movement counts as a wakeup — no Math.abs().
         // A coin crashing -40% in 1h is a rug, not a sleeper revival.
         ((change1h  ?? 0) >= DORMANT_MOVE_1H  ||
