@@ -67,14 +67,13 @@ const EXTERNAL_DISCOVER_MS   = 2 * 60_000  // every 2 minutes
 const POLL_MS          = (parseInt(process.env.MOVERS_POLL_MINUTES   ?? '20') || 20) * 60_000   // default 20 min (was 5)
 const ENRICH_MS        = (parseInt(process.env.MOVERS_ENRICH_SECONDS ?? '60') || 60) * 1_000    // default 60s
 const DORMANT_AGE_DAYS    = 25
-const DORMANT_MOVE_1H     = 30        // % threshold
-const DORMANT_MOVE_6H     = 60        // % threshold
-const DORMANT_MOVE_24H    = 25        // % threshold — catches slow-build wakeups
-// Floor MC threshold — only alert if the lowest MC we observed is below this.
-// Prevents re-alerting on already-established tokens (e.g. waking from $200K).
-// $75K catches the common pattern: dormant token pumps from $1-10K to $50-75K range.
+const DORMANT_MOVE_1H     = 10        // % — early signal: +10% in last hour
+const DORMANT_MOVE_6H     = 25        // % — sustained move: +25% over 6h
+const DORMANT_MOVE_24H    = 15        // % — slow-build: +15% over 24h
+// Alert only when CURRENT market cap is at or below this — entry point filter.
+// Coins already at $1M+ are not useful entries. Buy when chilling at <$10K.
 // Override with env: DORMANT_MAX_WAKE_MC (in USD)
-const DORMANT_MAX_WAKE_MC = parseInt(process.env.DORMANT_MAX_WAKE_MC ?? '75000') || 75000
+const DORMANT_MAX_WAKE_MC = parseInt(process.env.DORMANT_MAX_WAKE_MC ?? '10000') || 10000
 const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
 const MAX_MINT_CACHE   = 1000         // rolling window of known mints (larger = fewer evictions of old dormant tokens)
 const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
@@ -527,34 +526,31 @@ export class MoversPoller extends EventEmitter {
       this.addSnap(mint, now, mc)
       const computed = this.computeChanges(mint, now)
 
-      // Track the floor (lowest MC ever seen in cache).
-      // Save the PRE-UPDATE value for the dormant check below — if this is the first
-      // enrichment cycle, prevFloorMc is undefined and the check uses !prevFloorMc = true
-      // (allows the alert even for tokens discovered after they started pumping).
-      const prevFloorMc = rec.floorMc
+      // Track floor MC (informational — shown on dashboard, not used for alert gating)
       if (rec.floorMc === undefined || mc < rec.floorMc) rec.floorMc = mc
 
       const change1h  = dex?.priceChange?.h1  ?? computed.c1h
       const change6h  = dex?.priceChange?.h6  ?? computed.c6h
       const change24h = dex?.priceChange?.h24 ?? computed.c24h
 
+      // Net positive buy pressure: more buys than sells in 24h.
+      // If DexScreener has no txn data (bonding curve / no dex pair), allow through.
+      const buys  = dex?.txns?.h24?.buys  ?? null
+      const sells = dex?.txns?.h24?.sells ?? null
+      const hasBuyPressure = buys === null || buys >= (sells ?? 0)
+
       // For graduated tokens, DexScreener's own txns24h.buys tells us if the token
       // traded recently without waiting for the next discovery cycle to update lastTradeAt.
-      // This cuts worst-case dormant alert latency from ~17 min to ~60 s for graduated tokens.
       const hasRecentActivity =
         lastTradeAt > now - 24 * 60 * 60_000 ||
         (graduated && (dex?.txns?.h24?.buys ?? 0) > 0)
 
       const meetsThreshold =
-        ageDays >= DORMANT_AGE_DAYS &&
-        hasRecentActivity &&
-        // Use the pre-update floor MC to qualify bottom catches.
-        // prevFloorMc is undefined on the very first enrichment cycle → allows the
-        // alert for tokens discovered after they started pumping (most external discoveries).
-        // On subsequent cycles it reflects the lowest MC we've actually observed.
-        (!prevFloorMc || prevFloorMc <= DORMANT_MAX_WAKE_MC) &&
-        // Only upward movement counts as a wakeup — no Math.abs().
-        // A coin crashing -40% in 1h is a rug, not a sleeper revival.
+        ageDays >= DORMANT_AGE_DAYS &&        // old/dormant token
+        hasRecentActivity &&                   // actively trading now
+        mc <= DORMANT_MAX_WAKE_MC &&           // still at low MC — good entry point (<$10K)
+        hasBuyPressure &&                      // net positive buy volume
+        // Upward price movement only — crash/rug is not a wakeup
         ((change1h  ?? 0) >= DORMANT_MOVE_1H  ||
          (change6h  ?? 0) >= DORMANT_MOVE_6H  ||
          (change24h ?? 0) >= DORMANT_MOVE_24H)
