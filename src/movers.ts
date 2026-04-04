@@ -79,6 +79,16 @@ const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
 const MAX_MINT_CACHE   = 1000         // rolling window of known mints (larger = fewer evictions of old dormant tokens)
 const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
 
+// Target Zone — coins older than 30 days sitting in the $8K-$14K MC range.
+// These are "sleeping" pump.fun coins that still have holders and could explode.
+const TARGET_ZONE_AGE_DAYS = 30
+const TARGET_ZONE_MIN_MC   = parseInt(process.env.TARGET_ZONE_MIN_MC ?? '8000')  || 8_000
+const TARGET_ZONE_MAX_MC   = parseInt(process.env.TARGET_ZONE_MAX_MC ?? '14000') || 14_000
+// Holder count TTL — re-fetch at most once every 15 min (pump.fun has rate limits)
+const HOLDER_COUNT_TTL_MS  = 15 * 60_000
+// Pump.fun individual coin API — returns holder_count
+const PUMPFUN_COIN_API     = 'https://frontend-api.pump.fun/coins'
+
 // ── Internal types ─────────────────────────────────────────────────────────────
 
 interface MintRecord {
@@ -93,6 +103,8 @@ interface MintRecord {
   communityFollowers?: number  // from Twitter widget API
   communityCheckedAt?: number  // epoch ms — last widget API check
   floorMc?:           number   // lowest MC ever observed in-cache — used for dormant entry-quality filter
+  holderCount?:       number   // from pump.fun /coins/{mint} API
+  holderCountAt?:     number   // epoch ms — when holder count was last fetched
 }
 
 interface BondingCurveData {
@@ -139,6 +151,7 @@ export interface MoverEntry {
   pairAddress?:       string   // Raydium pool address (graduated only) — used for Axiom viewer counts
   twitterHandle?:     string   // X / Twitter handle (without @)
   communityFollowers?: number  // follower count from widget API
+  holderCount?:       number   // from pump.fun API
 }
 
 // ── SOL price cache ────────────────────────────────────────────────────────────
@@ -291,6 +304,59 @@ export class MoversPoller extends EventEmitter {
     }
   }
 
+  /**
+   * Returns all tracked coins that are >= 30 days old and have MC in the
+   * target zone ($8K-$14K by default). These are "sleeping" coins with remaining
+   * holders that could wake up on the next narrative / OG event.
+   */
+  getTargetZone(): MoverEntry[] {
+    const minAgeDays = TARGET_ZONE_AGE_DAYS
+    return Array.from(this.movers.values()).filter(e =>
+      e.ageHours / 24 >= minAgeDays &&
+      e.marketCap >= TARGET_ZONE_MIN_MC &&
+      e.marketCap <= TARGET_ZONE_MAX_MC
+    )
+  }
+
+  // ── Target Zone holder count fetcher ─────────────────────────────────────
+  // Calls pump.fun /coins/{mint} for each target-zone coin that hasn't had its
+  // holder count refreshed within the TTL. Rate-limited to 300ms between calls.
+
+  private async fetchTargetZoneHolderCounts(): Promise<void> {
+    const now = Date.now()
+    const candidates = Array.from(this.mintCache.entries()).filter(([mint, rec]) => {
+      const entry = this.movers.get(mint)
+      if (!entry) return false
+      const ageDays = entry.ageHours / 24
+      if (ageDays < TARGET_ZONE_AGE_DAYS) return false
+      if (entry.marketCap < TARGET_ZONE_MIN_MC * 0.8 || entry.marketCap > TARGET_ZONE_MAX_MC * 1.3) return false
+      // Skip if count is fresh enough
+      if (rec.holderCountAt && (now - rec.holderCountAt) < HOLDER_COUNT_TTL_MS) return false
+      return true
+    })
+
+    if (candidates.length === 0) return
+
+    for (const [mint, rec] of candidates) {
+      try {
+        const res = await axios.get(`${PUMPFUN_COIN_API}/${mint}`, {
+          timeout: 6_000,
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+        })
+        const count = res.data?.holder_count
+        if (typeof count === 'number') {
+          rec.holderCount  = count
+          rec.holderCountAt = Date.now()
+          // Propagate to live MoverEntry so the API endpoint sees it immediately
+          const entry = this.movers.get(mint)
+          if (entry) entry.holderCount = count
+        }
+      } catch { /* non-fatal — skip this mint */ }
+      // 300ms between requests to avoid hammering pump.fun
+      await new Promise(r => setTimeout(r, 300))
+    }
+  }
+
   // ── External movers scan (every 5 min) ────────────────────────────────────
   // Finds OLD tokens currently pumping via external data sources. This is the
   // critical path for tokens like "Happy Birthday Solana" or DIEGO (1y) that
@@ -358,7 +424,18 @@ export class MoversPoller extends EventEmitter {
       let added = 0
       for (const coin of coins) {
         const mint: string | undefined = coin.mint
-        if (mint && mint !== WSOL) { mints.add(mint); added++ }
+        if (mint && mint !== WSOL) {
+          mints.add(mint)
+          added++
+          // Opportunistically cache holder_count if the API returned it
+          if (typeof coin.holder_count === 'number') {
+            const rec = this.mintCache.get(mint)
+            if (rec && (!rec.holderCountAt || Date.now() - rec.holderCountAt > HOLDER_COUNT_TTL_MS)) {
+              rec.holderCount   = coin.holder_count
+              rec.holderCountAt = Date.now()
+            }
+          }
+        }
       }
       if (added > 0) console.log(`[Movers] External: pump.fun coins API returned ${added} tokens`)
     } catch (err: any) {
@@ -589,6 +666,7 @@ export class MoversPoller extends EventEmitter {
         pairAddress:        dex?.pairAddress || undefined,
         twitterHandle:      rec.twitterHandle,
         communityFollowers: rec.communityFollowers,
+        holderCount:        rec.holderCount,
       }
 
       // Keep mintCache name/symbol up-to-date
@@ -635,6 +713,9 @@ export class MoversPoller extends EventEmitter {
       `[Movers] Enriched ${updated}/${allMints.length} tokens ` +
       `(${dexMap.size} DexScreener, ${curveMap.size} bonding-curve)`
     )
+
+    // Fetch holder counts for target-zone candidates (async, non-blocking)
+    this.fetchTargetZoneHolderCounts().catch(() => {})
   }
 
   // ── Step 1: Helius Enhanced Transactions ────────────────────────────────────

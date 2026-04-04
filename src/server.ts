@@ -15,6 +15,7 @@
  *   DELETE /api/wallets/:address  — remove wallet
  *   GET  /api/alerts              — recent 50 alerts
  *   GET  /api/users               — configured user names (no chat IDs)
+ *   GET  /api/target-zone         — pump.fun coins ≥30d old, MC $8K-$14K (sortable)
  *
  * Webhook (no auth check — Helius uses its own authHeader mechanism):
  *   POST /api/webhook/helius      — receives Helius enhanced transaction events
@@ -460,6 +461,40 @@ export function startServer(
       axiom_cookie_ok: cookieOk,
       lastPollAt: status.lastPollAt,
       lastError: status.lastError,
+    })
+  })
+
+  // ── GET /api/target-zone ─────────────────────────────────────────────────
+  // Returns pump.fun coins >= 30 days old with MC in the $8K-$14K range.
+  // These are "sleeping" coins with remaining holders — good pre-pump watchlist.
+  app.get('/api/target-zone', (req: Request, res: Response) => {
+    const status = moversPoller.getStatus()
+    const coins  = moversPoller.getTargetZone()
+
+    // Sort by holder count desc by default (most holders = most likely to react)
+    const sortBy = (req.query.sort as string) ?? 'holders'
+    const sortDir = req.query.dir === 'asc' ? 1 : -1
+
+    const sorted = [...coins].sort((a, b) => {
+      let aVal: number, bVal: number
+      switch (sortBy) {
+        case 'mc':        aVal = a.marketCap;            bVal = b.marketCap;            break
+        case 'age':       aVal = a.ageHours;             bVal = b.ageHours;             break
+        case 'volume':    aVal = a.volume24h ?? 0;       bVal = b.volume24h ?? 0;       break
+        case 'txns':      aVal = a.txns24h ?? 0;         bVal = b.txns24h ?? 0;         break
+        case 'change1h':  aVal = a.change1h ?? 0;        bVal = b.change1h ?? 0;        break
+        case 'change24h': aVal = a.change24h ?? 0;       bVal = b.change24h ?? 0;       break
+        case 'traded':    aVal = a.lastTradeAt;          bVal = b.lastTradeAt;          break
+        case 'holders':
+        default:          aVal = a.holderCount ?? 0;     bVal = b.holderCount ?? 0;     break
+      }
+      return (bVal - aVal) * sortDir
+    })
+
+    res.json({
+      coins: sorted,
+      count: sorted.length,
+      lastPollAt: status.lastPollAt,
     })
   })
 
