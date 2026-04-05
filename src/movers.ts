@@ -108,12 +108,13 @@ interface MintRecord {
   graduated:          boolean
   metadataFetched:    boolean  // true once Helius metadata has been loaded
   seenCount:          number   // polls in which this mint has appeared
-  twitterHandle?:     string   // resolved from DexScreener socials or IPFS metadata
-  communityFollowers?: number  // from Twitter widget API
-  communityCheckedAt?: number  // epoch ms — last widget API check
-  floorMc?:           number   // lowest MC ever observed in-cache — used for dormant entry-quality filter
+  twitterHandle?:     string
+  communityFollowers?: number
+  communityCheckedAt?: number
+  floorMc?:           number   // lowest MC ever observed in-cache
   holderCount?:       number   // from pump.fun /coins/{mint} API
   holderCountAt?:     number   // epoch ms — when holder count was last fetched
+  pumpfunMc?:         number   // last-known MC from pump.fun API — fallback when Dex+curve both unavailable
 }
 
 interface BondingCurveData {
@@ -508,6 +509,8 @@ export class MoversPoller extends EventEmitter {
       }
       const lastTrade: number = coin.last_trade_timestamp ?? 0
       if (lastTrade > existing.lastTradeAt) existing.lastTradeAt = lastTrade
+      // Keep pump.fun MC fresh so enrich() has a fallback
+      if (mc > 0) existing.pumpfunMc = mc
       return 0
     }
 
@@ -522,6 +525,7 @@ export class MoversPoller extends EventEmitter {
       seenCount:       2,
       holderCount:     typeof coin.holder_count === 'number' ? coin.holder_count : undefined,
       holderCountAt:   typeof coin.holder_count === 'number' ? now : undefined,
+      pumpfunMc:       mc > 0 ? mc : undefined,
     })
     return 1
   }
@@ -718,17 +722,22 @@ export class MoversPoller extends EventEmitter {
     const allMints = Array.from(this.mintCache.keys())
     const dexMap   = await this.fetchDexData(allMints)
 
-    // 3. Bonding curve state for mints not found on DexScreener
+    // 3. Bonding curve state for mints not found on DexScreener.
+    // Skip coins that already have a pumpfunMc fallback — fetching the bonding curve
+    // for those is unnecessary and wastes Helius RPC credits (especially after the
+    // Target Zone scanner seeds hundreds of bonding-curve coins into mintCache).
     const nonGrad  = allMints.filter(m => !dexMap.has(m))
-    const curveMap = await this.fetchBondingCurves(nonGrad)
+    const needCurve = nonGrad.filter(m => !this.mintCache.get(m)?.pumpfunMc)
+    const curveMap = await this.fetchBondingCurves(needCurve)
 
     // 4. Token metadata (name/symbol) — only for non-graduated mints above the MC
-    //    threshold that haven't had metadata fetched yet (saves TOKENS_METADATA_V2 credits)
-    const needMeta = nonGrad.filter(m => {
+    //    threshold that haven't had metadata fetched yet (saves TOKENS_METADATA_V2 credits).
+    // Coins from pump.fun scan already have metadataFetched=true so they're excluded.
+    const needMeta = needCurve.filter(m => {
       const rec = this.mintCache.get(m)
       if (!rec || rec.metadataFetched) return false
-      if (rec.name && rec.name !== m.slice(0, 8)) return false  // already have a name
-      if (rec.seenCount < 2) return false  // skip flash tokens seen only once (saves TOKENS_METADATA_V2)
+      if (rec.name && rec.name !== m.slice(0, 8)) return false
+      if (rec.seenCount < 2) return false
       const curve = curveMap.get(m)
       if (!curve) return false
       const mc = computeMcUsd(curve, solPrice)
@@ -754,7 +763,10 @@ export class MoversPoller extends EventEmitter {
 
       // Skip if we have no usable data or below the MC threshold (pump.fun + $2.9K filter)
       const graduated = dex ? true : (curve?.complete ?? rec.graduated)
-      const mc = dex?.fdv ?? (curve ? computeMcUsd(curve, solPrice) : 0)
+      // MC priority: DexScreener FDV > bonding-curve on-chain > pump.fun API snapshot
+      // The pump.fun fallback is critical for bonding-curve coins not yet on DexScreener —
+      // without it, coins seeded by the Target Zone scanner are silently dropped here.
+      const mc = dex?.fdv ?? (curve ? computeMcUsd(curve, solPrice) : (rec.pumpfunMc ?? 0))
       if (!mc || mc < MIN_MC_USD) continue
 
       // Creation timestamp: DexScreener pairCreatedAt is the best proxy.
