@@ -88,11 +88,15 @@ const TARGET_ZONE_MAX_MC   = parseInt(process.env.TARGET_ZONE_MAX_MC ?? '14000')
 const HOLDER_COUNT_TTL_MS  = 15 * 60_000
 // Pump.fun individual coin API — returns holder_count
 const PUMPFUN_COIN_API     = 'https://frontend-api.pump.fun/coins'
-// Target Zone active scanner: pages through pump.fun by MC desc to find dormant coins
-// in range that are NEVER active enough to appear in normal discovery.
-// Scans up to MAX pages; stops early when the whole page is below the floor.
-const TARGET_ZONE_SCAN_MS   = 10 * 60_000   // every 10 min
-const TARGET_ZONE_SCAN_PAGES = 60            // up to 3 000 coins (60 × 50)
+// Target Zone active scanner: pages through pump.fun to find dormant coins in range
+// that are NEVER active enough to appear in normal discovery.
+const TARGET_ZONE_SCAN_MS    = 10 * 60_000  // every 10 min
+// Pass 1 — sort by market_cap DESC: 300 pages × 50 = 15 000 coins from the top.
+// Pump.fun typically has 3 000-8 000 coins with MC > $14K so this reaches the $8K band.
+const TARGET_ZONE_SCAN_PAGES = 300
+// Pass 2 — sort by created_timestamp ASC: oldest coins first, guaranteed ≥30d old.
+// 200 pages × 50 = 10 000 oldest coins. Catches coins MC-sort misses.
+const TARGET_ZONE_AGE_SCAN_PAGES = 200
 
 // ── Internal types ─────────────────────────────────────────────────────────────
 
@@ -389,82 +393,137 @@ export class MoversPoller extends EventEmitter {
   private async scanTargetZoneCoins(): Promise<void> {
     const now         = Date.now()
     const ageCutoffMs = TARGET_ZONE_AGE_DAYS * 24 * 60 * 60_000
-    // Scan a wider MC window so DexScreener corrections don't push coins out of range
-    const scanFloor = TARGET_ZONE_MIN_MC * 0.6   // $4.8K — wider net
-    const scanCeil  = TARGET_ZONE_MAX_MC * 2.0   // $28K — wider net
-    let added = 0
-    let pagesScanned = 0
+    // Use a generous MC window — DexScreener FDV can differ from pump.fun's bonding-curve MC
+    const scanFloor = TARGET_ZONE_MIN_MC * 0.5   // $4K — wide net, enrich() will correct
+    const scanCeil  = TARGET_ZONE_MAX_MC * 2.5   // $35K — wide net
 
-    for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
-      let coins: any[]
-      try {
-        const res = await axios.get(PUMPFUN_COINS_API, {
-          params: {
-            sort:        'market_cap',
-            order:       'DESC',
-            limit:       50,
-            offset:      page * 50,
-            includeNsfw: false,
-          },
-          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-          timeout: 8_000,
-        })
-        coins = Array.isArray(res.data) ? res.data : []
-      } catch (err: any) {
-        console.warn('[Movers] TZ scan page error:', err?.message)
-        break
-      }
-      if (coins.length === 0) break
-      pagesScanned++
+    let totalAdded = 0
 
-      let aboveFloor = 0
-      for (const coin of coins) {
-        const mc:        number = coin.usd_market_cap ?? 0
-        const createdAt: number = coin.created_timestamp ?? now
-        const ageDays = (now - createdAt) / (24 * 60 * 60_000)
-        if (mc > scanFloor) aboveFloor++
+    // ── Pass 1: sort by market_cap DESC ─────────────────────────────────────
+    // Starts from highest MC, pages down until we're consistently below the floor.
+    // Need ~100-300 pages depending on how many coins are above $14K at this moment.
+    {
+      let added = 0
+      let pagesScanned = 0
+      let consecutiveBelowFloor = 0  // require 3 in a row to stop — avoids false early exit
 
-        if (mc >= scanFloor && mc <= scanCeil && ageDays >= TARGET_ZONE_AGE_DAYS) {
-          const mint: string | undefined = coin.mint
-          if (!mint || mint === WSOL) continue
-          const existing = this.mintCache.get(mint)
-          if (existing) {
-            // Refresh holder count if stale
-            if (typeof coin.holder_count === 'number' &&
-                (!existing.holderCountAt || now - existing.holderCountAt > HOLDER_COUNT_TTL_MS)) {
-              existing.holderCount   = coin.holder_count
-              existing.holderCountAt = now
-            }
-            // Update lastTradeAt if pump.fun has a newer timestamp
-            const lastTrade: number = coin.last_trade_timestamp ?? 0
-            if (lastTrade > existing.lastTradeAt) existing.lastTradeAt = lastTrade
-          } else {
-            this.mintCache.set(mint, {
-              name:            coin.name   || mint.slice(0, 8),
-              symbol:          coin.symbol || '?',
-              firstSeen:       createdAt,
-              lastTradeAt:     coin.last_trade_timestamp ?? createdAt,
-              graduated:       false,
-              metadataFetched: true,  // name/symbol already from pump.fun
-              seenCount:       2,     // skip single-poll metadata gate
-              holderCount:     typeof coin.holder_count === 'number' ? coin.holder_count : undefined,
-              holderCountAt:   typeof coin.holder_count === 'number' ? now : undefined,
-            })
-            added++
-          }
+      for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
+        let coins: any[]
+        try {
+          const res = await axios.get(PUMPFUN_COINS_API, {
+            params: { sort: 'market_cap', order: 'DESC', limit: 50, offset: page * 50, includeNsfw: false },
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+            timeout: 8_000,
+          })
+          coins = Array.isArray(res.data) ? res.data : []
+        } catch (err: any) {
+          console.warn('[Movers] TZ MC-scan error (page', page, '):', err?.message)
+          break
         }
+        if (coins.length === 0) break
+        pagesScanned++
+
+        let aboveFloor = 0
+        for (const coin of coins) {
+          const mc: number = coin.usd_market_cap ?? 0
+          if (mc > scanFloor) aboveFloor++
+          added += this.seedCoinToCache(coin, mc, scanFloor, scanCeil, now)
+        }
+
+        if (aboveFloor === 0) {
+          consecutiveBelowFloor++
+          if (consecutiveBelowFloor >= 3) break   // 3 full pages below floor → done
+        } else {
+          consecutiveBelowFloor = 0
+        }
+
+        await new Promise(r => setTimeout(r, 100))
       }
-
-      // If entire page is below our floor, we've passed the target band — stop early
-      if (aboveFloor === 0) break
-
-      // Small pause between pages to avoid hammering pump.fun
-      await new Promise(r => setTimeout(r, 200))
+      totalAdded += added
+      console.log(`[Movers] TZ MC-scan: ${pagesScanned} pages, +${added} new mints`)
     }
 
-    console.log(
-      `[Movers] TZ scan: ${pagesScanned} pages, +${added} new mints → cache ${this.mintCache.size}`
-    )
+    // ── Pass 2: sort by created_timestamp ASC (oldest first) ────────────────
+    // Guaranteed to be ≥30d old — catches any coin the MC sort missed.
+    // Stop when we hit coins younger than TARGET_ZONE_AGE_DAYS.
+    {
+      let added = 0
+      let pagesScanned = 0
+
+      for (let page = 0; page < TARGET_ZONE_AGE_SCAN_PAGES; page++) {
+        let coins: any[]
+        try {
+          const res = await axios.get(PUMPFUN_COINS_API, {
+            params: { sort: 'created_timestamp', order: 'ASC', limit: 50, offset: page * 50, includeNsfw: false },
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+            timeout: 8_000,
+          })
+          coins = Array.isArray(res.data) ? res.data : []
+        } catch (err: any) {
+          console.warn('[Movers] TZ age-scan error (page', page, '):', err?.message)
+          break
+        }
+        if (coins.length === 0) break
+        pagesScanned++
+
+        let youngCount = 0
+        for (const coin of coins) {
+          const mc: number        = coin.usd_market_cap ?? 0
+          const created: number   = coin.created_timestamp ?? now
+          const ageDays           = (now - created) / (24 * 60 * 60_000)
+          if (ageDays < TARGET_ZONE_AGE_DAYS) { youngCount++; continue }
+          added += this.seedCoinToCache(coin, mc, scanFloor, scanCeil, now)
+        }
+
+        // Once more than half the page is younger than our threshold, we've scanned all old coins
+        if (youngCount > coins.length * 0.5) break
+
+        await new Promise(r => setTimeout(r, 100))
+      }
+      totalAdded += added
+      console.log(`[Movers] TZ age-scan: ${pagesScanned} pages, +${added} new mints`)
+    }
+
+    console.log(`[Movers] TZ scan complete: +${totalAdded} total new mints → cache ${this.mintCache.size}`)
+  }
+
+  /** Seed a pump.fun coin API response object into mintCache if it's in the scan window.
+   *  Returns 1 if a new entry was added, 0 otherwise. */
+  private seedCoinToCache(
+    coin: any, mc: number,
+    scanFloor: number, scanCeil: number,
+    now: number
+  ): number {
+    if (mc < scanFloor || mc > scanCeil) return 0
+    const mint: string | undefined = coin.mint
+    if (!mint || mint === WSOL) return 0
+
+    const existing = this.mintCache.get(mint)
+    if (existing) {
+      // Refresh stale holder count
+      if (typeof coin.holder_count === 'number' &&
+          (!existing.holderCountAt || now - existing.holderCountAt > HOLDER_COUNT_TTL_MS)) {
+        existing.holderCount   = coin.holder_count
+        existing.holderCountAt = now
+      }
+      const lastTrade: number = coin.last_trade_timestamp ?? 0
+      if (lastTrade > existing.lastTradeAt) existing.lastTradeAt = lastTrade
+      return 0
+    }
+
+    const createdAt: number = coin.created_timestamp ?? now
+    this.mintCache.set(mint, {
+      name:            coin.name   || mint.slice(0, 8),
+      symbol:          coin.symbol || '?',
+      firstSeen:       createdAt,
+      lastTradeAt:     coin.last_trade_timestamp ?? createdAt,
+      graduated:       false,
+      metadataFetched: true,
+      seenCount:       2,
+      holderCount:     typeof coin.holder_count === 'number' ? coin.holder_count : undefined,
+      holderCountAt:   typeof coin.holder_count === 'number' ? now : undefined,
+    })
+    return 1
   }
 
   // ── External movers scan (every 2 min) ────────────────────────────────────
