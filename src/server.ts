@@ -166,6 +166,11 @@ export function startServer(
   const publicDir = path.join(__dirname, 'public')
   app.use(express.static(publicDir))
 
+  // Clean URL for Target Zone page (no .html extension)
+  app.get('/target-zone', (_req: Request, res: Response) => {
+    res.sendFile(path.join(publicDir, 'target-zone.html'))
+  })
+
   // ── Health check (no auth) ────────────────────────────────────────────────
   app.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', ts: new Date().toISOString() })

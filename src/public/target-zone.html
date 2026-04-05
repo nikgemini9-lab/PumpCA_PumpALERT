@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🎯 Target Zone — PumpALERT</title>
+  <style>
+    :root {
+      --bg: #0d0e17;
+      --bg2: #12141f;
+      --bg3: #1a1c2e;
+      --border: #252840;
+      --green: #00d084;
+      --green-dim: #00d08418;
+      --red: #ff4757;
+      --red-dim: #ff475718;
+      --yellow: #ffd32a;
+      --blue: #4a9eff;
+      --cyan: #00c2ff;
+      --cyan-dim: #00c2ff15;
+      --purple: #a78bfa;
+      --purple-dim: rgba(139,92,246,.12);
+      --text: #e2e4f0;
+      --text-dim: #6b6f94;
+      --text-muted: #383b5a;
+      --radius: 12px;
+      --radius-sm: 7px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', 'SF Pro Display', system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* ── LOGIN ── */
+    #login-screen {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .login-box {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 40px;
+      width: 340px;
+      text-align: center;
+    }
+    .login-box h1 { font-size: 22px; margin-bottom: 6px; color: var(--purple); }
+    .login-box p  { color: var(--text-dim); margin-bottom: 24px; font-size: 13px; }
+    .login-box input {
+      width: 100%;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      padding: 10px 14px;
+      font-size: 14px;
+      margin-bottom: 12px;
+      outline: none;
+    }
+    .login-box input:focus { border-color: var(--purple); }
+    .login-error { color: var(--red); font-size: 12px; margin-top: 8px; display: none; }
+
+    /* ── HEADER ── */
+    #app { display: none; }
+    header {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(10px);
+    }
+    .header-left { display: flex; align-items: center; gap: 14px; }
+    .logo { font-size: 17px; font-weight: 800; color: var(--cyan); letter-spacing: -0.5px; }
+    .header-right { display: flex; align-items: center; gap: 10px; }
+
+    .btn-icon {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-dim);
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+    }
+    .btn-icon:hover { color: var(--text); border-color: var(--text-dim); }
+
+    /* ── MAIN ── */
+    main {
+      padding: 16px 20px 40px;
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+
+    /* ── PAGE TITLE BAR ── */
+    .page-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .page-title { font-size: 20px; font-weight: 700; }
+    .page-desc  { color: var(--text-dim); font-size: 13px; }
+    .count-badge {
+      background: var(--purple-dim);
+      color: var(--purple);
+      border: 1px solid rgba(139,92,246,.3);
+      border-radius: 10px;
+      padding: 2px 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .updated-ts { color: var(--text-dim); font-size: 11px; margin-left: auto; }
+
+    /* ── FILTERS ── */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .filter-bar label { color: var(--text-dim); font-size: 12px; }
+    .filter-bar input[type=number] {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      padding: 4px 8px;
+      font-size: 12px;
+      width: 80px;
+      outline: none;
+    }
+    .filter-bar input[type=number]:focus { border-color: var(--purple); }
+    .filter-apply {
+      background: var(--purple-dim);
+      border: 1px solid rgba(139,92,246,.4);
+      border-radius: var(--radius-sm);
+      color: var(--purple);
+      padding: 5px 14px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .filter-apply:hover { background: rgba(139,92,246,.25); }
+
+    /* ── TABLE ── */
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    thead tr {
+      border-bottom: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+    thead th {
+      padding: 7px 10px;
+      white-space: nowrap;
+      text-align: left;
+      font-weight: 500;
+      user-select: none;
+    }
+    thead th.sortable { cursor: pointer; }
+    thead th.sortable:hover { color: var(--text); }
+    thead th.sort-active { color: var(--purple); }
+    tbody tr { border-bottom: 1px solid var(--border); }
+    tbody tr:hover { background: rgba(255,255,255,.02); }
+    tbody td { padding: 6px 10px; white-space: nowrap; }
+
+    .coin-symbol { font-weight: 600; font-size: 13px; }
+    .coin-name   { color: var(--text-dim); font-size: 10px; }
+
+    .mover-ca {
+      font-family: monospace;
+      font-size: 11px;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 4px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .mover-ca:hover { color: var(--cyan); border-color: var(--cyan); }
+
+    .x-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13px;
+      margin-left: 4px;
+    }
+    .x-link:hover { color: #1d9bf0; }
+
+    .holders-val { color: var(--purple); font-weight: 600; }
+
+    .pos { color: #4caf50; }
+    .neg { color: #f44336; }
+    .neu { color: #888; }
+    .dim { color: var(--text-dim); }
+
+    .links-cell a {
+      color: var(--blue);
+      text-decoration: none;
+      font-size: 12px;
+      margin-right: 6px;
+    }
+    .links-cell a:hover { text-decoration: underline; }
+
+    .empty-row td {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-dim);
+    }
+
+    /* ── TOAST ── */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 18px;
+      font-size: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .3s;
+      z-index: 9999;
+    }
+    #toast.show { opacity: 1; }
+
+    /* ── RANGE SELECTOR ── */
+    .range-btn {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-dim);
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .range-btn.active { background: var(--purple-dim); border-color: rgba(139,92,246,.4); color: var(--purple); }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <div class="login-box">
+    <h1>🎯 Target Zone</h1>
+    <p>Sleeping pump.fun coins waiting for a catalyst</p>
+    <input id="login-input" type="password" placeholder="Dashboard secret key" autocomplete="current-password" />
+    <br>
+    <button onclick="doLogin()" style="background:var(--purple);color:#fff;border:none;border-radius:var(--radius-sm);padding:10px 20px;font-size:14px;font-weight:600;cursor:pointer;width:100%">Enter</button>
+    <p class="login-error" id="login-error">Invalid key — try again</p>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app">
+  <header>
+    <div class="header-left">
+      <span class="logo">🚀 PumpALERT</span>
+      <span style="color:var(--text-dim);font-size:12px">/</span>
+      <span style="color:var(--purple);font-weight:600;font-size:14px">🎯 Target Zone</span>
+    </div>
+    <div class="header-right">
+      <a href="/" class="btn-icon">← Dashboard</a>
+      <button class="btn-icon" onclick="loadData()">↻ Refresh</button>
+      <button class="btn-icon" onclick="logout()">Sign Out</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="page-header">
+      <span class="page-title">🎯 Target Zone</span>
+      <span class="page-desc">pump.fun coins ≥30 days old sitting at low MC — waiting for an OG catalyst</span>
+      <span class="count-badge" id="count-badge">–</span>
+      <span class="updated-ts" id="updated-ts"></span>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-bar">
+      <label>Min MC $</label>
+      <input type="number" id="filter-min-mc" value="8000" min="0" step="1000" />
+      <label>Max MC $</label>
+      <input type="number" id="filter-max-mc" value="14000" min="0" step="1000" />
+      <label>Min Age (days)</label>
+      <input type="number" id="filter-min-age" value="30" min="1" step="1" />
+      <button class="filter-apply" onclick="applyFilters()">Apply</button>
+      <span style="color:var(--text-muted);font-size:11px">Server defaults: $8K–$14K, 30+ days</span>
+    </div>
+
+    <div class="table-wrap">
+      <table id="tz-table">
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th class="sortable" onclick="sortBy('name')">COIN</th>
+            <th>CA</th>
+            <th class="sortable sort-active" onclick="sortBy('holders')" id="th-holders">HOLDERS ▼</th>
+            <th class="sortable" onclick="sortBy('mc')">MCAP</th>
+            <th class="sortable" onclick="sortBy('age')">AGE</th>
+            <th class="sortable" onclick="sortBy('traded')">LAST TRADED</th>
+            <th class="sortable" onclick="sortBy('volume')">24H VOL</th>
+            <th class="sortable" onclick="sortBy('txns')">TXNS</th>
+            <th class="sortable" onclick="sortBy('change5m')">5M</th>
+            <th class="sortable" onclick="sortBy('change1h')">1H</th>
+            <th class="sortable" onclick="sortBy('change24h')">24H</th>
+            <th>LINKS</th>
+          </tr>
+        </thead>
+        <tbody id="tz-tbody">
+          <tr class="empty-row"><td colspan="13">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  let API_KEY = ''
+  let allCoins = []
+  let sortKey = 'holders'
+  let sortDir = -1
+  let refreshTimer = null
+  // Client-side filter overrides (applied on top of server sort)
+  let clientMinMc  = null
+  let clientMaxMc  = null
+  let clientMinAge = null
+
+  // ── AUTH ──────────────────────────────────────────────────────────
+  function apiHeaders() {
+    return API_KEY
+      ? { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json' }
+  }
+
+  async function doLogin() {
+    const key = document.getElementById('login-input').value.trim()
+    if (!key) return
+    API_KEY = key
+    try {
+      const r = await fetch('/api/status', { headers: apiHeaders() })
+      if (!r.ok) throw new Error('bad')
+      localStorage.setItem('pump_key', key)
+      showApp()
+    } catch {
+      API_KEY = ''
+      document.getElementById('login-error').style.display = 'block'
+    }
+  }
+
+  function logout() {
+    localStorage.removeItem('pump_key')
+    API_KEY = ''
+    if (refreshTimer) clearInterval(refreshTimer)
+    document.getElementById('app').style.display = 'none'
+    document.getElementById('login-screen').style.display = 'flex'
+  }
+
+  function showApp() {
+    document.getElementById('login-screen').style.display = 'none'
+    document.getElementById('app').style.display = 'block'
+    loadData()
+    refreshTimer = setInterval(loadData, 5 * 60_000)
+  }
+
+  document.getElementById('login-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin()
+  })
+
+  // ── DATA ──────────────────────────────────────────────────────────
+  async function loadData() {
+    const tbody   = document.getElementById('tz-tbody')
+    const countEl = document.getElementById('count-badge')
+    const tsEl    = document.getElementById('updated-ts')
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="13">Loading…</td></tr>'
+    try {
+      const r    = await fetch(`/api/target-zone?sort=${sortKey}&dir=${sortDir > 0 ? 'asc' : 'desc'}`, { headers: apiHeaders() })
+      const data = await r.json()
+      allCoins = data.coins || []
+      if (data.lastPollAt) tsEl.textContent = 'updated ' + timeAgo(data.lastPollAt)
+      applyFilters()
+    } catch {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="13" style="color:#f44336">Failed to load — check connection</td></tr>'
+    }
+  }
+
+  function applyFilters() {
+    clientMinMc  = parseFloat(document.getElementById('filter-min-mc').value)  || null
+    clientMaxMc  = parseFloat(document.getElementById('filter-max-mc').value)  || null
+    clientMinAge = parseFloat(document.getElementById('filter-min-age').value) || null
+
+    let list = [...allCoins]
+    if (clientMinMc  != null) list = list.filter(c => c.marketCap >= clientMinMc)
+    if (clientMaxMc  != null) list = list.filter(c => c.marketCap <= clientMaxMc)
+    if (clientMinAge != null) list = list.filter(c => c.ageHours / 24 >= clientMinAge)
+
+    // Re-sort after client filter
+    list.sort((a, b) => {
+      let av, bv
+      switch (sortKey) {
+        case 'name':      av = (a.name||'').toLowerCase(); bv = (b.name||'').toLowerCase(); return av < bv ? sortDir : av > bv ? -sortDir : 0
+        case 'mc':        av = a.marketCap;    bv = b.marketCap;    break
+        case 'age':       av = a.ageHours;     bv = b.ageHours;     break
+        case 'volume':    av = a.volume24h??0; bv = b.volume24h??0; break
+        case 'txns':      av = a.txns24h??0;   bv = b.txns24h??0;   break
+        case 'change5m':  av = a.change5m??-Infinity;  bv = b.change5m??-Infinity; break
+        case 'change1h':  av = a.change1h??-Infinity;  bv = b.change1h??-Infinity; break
+        case 'change24h': av = a.change24h??-Infinity; bv = b.change24h??-Infinity; break
+        case 'traded':    av = a.lastTradeAt;  bv = b.lastTradeAt;  break
+        case 'holders':
+        default:          av = a.holderCount??0; bv = b.holderCount??0; break
+      }
+      return (bv - av) * sortDir
+    })
+
+    document.getElementById('count-badge').textContent = `${list.length} coin${list.length !== 1 ? 's' : ''}`
+    render(list)
+  }
+
+  // ── SORT ──────────────────────────────────────────────────────────
+  function sortBy(key) {
+    if (sortKey === key) {
+      sortDir *= -1
+    } else {
+      sortKey = key
+      sortDir = -1
+    }
+    const arrow = sortDir > 0 ? ' ▲' : ' ▼'
+    document.querySelectorAll('#tz-table thead th').forEach(th => {
+      th.classList.remove('sort-active')
+      const oc = th.getAttribute('onclick')
+      if (!oc) return
+      // Strip old arrow, add new if active
+      th.textContent = th.textContent.replace(/ [▲▼]$/, '')
+      if (oc.includes(`'${key}'`)) {
+        th.classList.add('sort-active')
+        th.textContent += arrow
+      }
+    })
+    applyFilters()
+  }
+
+  // ── RENDER ────────────────────────────────────────────────────────
+  function render(coins) {
+    const tbody = document.getElementById('tz-tbody')
+    if (coins.length === 0) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="13">No coins match the current filters</td></tr>`
+      return
+    }
+
+    tbody.innerHTML = coins.map((c, i) => {
+      const mint = c.mint
+      const short = mint.slice(0,6) + '…' + mint.slice(-4)
+      const holdersHtml = c.holderCount != null
+        ? `<span class="holders-val">${c.holderCount.toLocaleString()}</span>`
+        : `<span class="dim" style="font-size:11px">—</span>`
+      return `<tr>
+        <td class="dim">${i + 1}</td>
+        <td>
+          <div class="coin-symbol">${escH(c.symbol)}</div>
+          <div class="coin-name">${escH(c.name)}</div>
+        </td>
+        <td>
+          <span class="mover-ca" onclick="copyCA(this,'${mint}')" title="${mint}">${short}</span>
+          <a href="https://x.com/search?q=${encodeURIComponent(mint)}&src=typed_query&f=live" target="_blank" class="x-link" title="Search CA on X">↗</a>
+        </td>
+        <td>${holdersHtml}</td>
+        <td>${fmtMc(c.marketCap)}</td>
+        <td class="dim">${fmtAge(c.ageHours)}</td>
+        <td class="dim">${fmtTraded(c.lastTradeAt)}</td>
+        <td>${fmtVol(c.volume24h)}</td>
+        <td class="dim">${c.txns24h != null ? c.txns24h : '—'}</td>
+        <td>${fmtPct(c.change5m)}</td>
+        <td>${fmtPct(c.change1h)}</td>
+        <td>${fmtPct(c.change24h)}</td>
+        <td class="links-cell">
+          <a href="https://dexscreener.com/solana/${mint}" target="_blank" title="DexScreener">Chart</a>
+          <a href="https://pump.fun/${mint}" target="_blank" title="pump.fun">Pump</a>
+          <a href="https://axiom.trade/t/${mint}" target="_blank" title="Axiom">Axiom</a>
+        </td>
+      </tr>`
+    }).join('')
+  }
+
+  // ── FORMATTERS ────────────────────────────────────────────────────
+  function fmtMc(n) {
+    if (n >= 1e6) return `$${(n/1e6).toFixed(2)}M`
+    if (n >= 1e3) return `$${(n/1e3).toFixed(1)}K`
+    return `$${n.toFixed(0)}`
+  }
+  function fmtVol(n) {
+    if (n == null) return '<span class="dim">—</span>'
+    if (n >= 1e6) return `$${(n/1e6).toFixed(1)}M`
+    if (n >= 1e3) return `$${(n/1e3).toFixed(1)}K`
+    return `$${n.toFixed(0)}`
+  }
+  function fmtAge(h) {
+    if (h >= 24*365) return `${Math.floor(h/24/365)}y ${Math.floor((h/24)%365)}d`
+    if (h >= 24*30)  return `${Math.floor(h/24/30)}mo`
+    if (h >= 24)     return `${Math.floor(h/24)}d`
+    return `${h}h`
+  }
+  function fmtTraded(ts) {
+    const diff = Date.now() - ts
+    if (diff < 60*60*1000)       return `${Math.floor(diff/60000)}m ago`
+    if (diff < 24*60*60*1000)    return `${Math.floor(diff/3600000)}h ago`
+    if (diff < 7*24*60*60*1000)  return `${Math.floor(diff/86400000)}d ago`
+    return new Date(ts).toLocaleDateString()
+  }
+  function fmtPct(n) {
+    if (n == null) return '<span class="dim">—</span>'
+    const cls = n > 0 ? 'pos' : n < 0 ? 'neg' : 'neu'
+    return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(1)}%</span>`
+  }
+  function timeAgo(ts) {
+    const diff = Date.now() - ts
+    if (diff < 60000) return 'just now'
+    if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`
+    return `${Math.floor(diff/3600000)}h ago`
+  }
+  function escH(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+  }
+  function copyCA(el, mint) {
+    navigator.clipboard.writeText(mint).catch(() => {})
+    const orig = el.textContent
+    el.textContent = 'copied!'
+    setTimeout(() => { el.textContent = orig }, 1200)
+    showToast('CA copied')
+  }
+  function showToast(msg) {
+    const t = document.getElementById('toast')
+    t.textContent = msg
+    t.classList.add('show')
+    setTimeout(() => t.classList.remove('show'), 1500)
+  }
+
+  // ── INIT ──────────────────────────────────────────────────────────
+  ;(function init() {
+    const saved = localStorage.getItem('pump_key')
+    if (saved) {
+      API_KEY = saved
+      fetch('/api/status', { headers: apiHeaders() })
+        .then(r => { if (r.ok) showApp(); else { API_KEY = ''; document.getElementById('login-screen').style.display = 'flex' } })
+        .catch(() => { API_KEY = ''; document.getElementById('login-screen').style.display = 'flex' })
+    }
+  })()
+</script>
+</body>
+</html>

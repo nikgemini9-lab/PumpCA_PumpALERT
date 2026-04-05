@@ -829,6 +829,7 @@
     </div>
     <div class="header-right">
       <span class="sync-info" id="sync-info">–</span>
+      <a href="/target-zone" class="btn-icon" style="color:#a78bfa;border-color:rgba(139,92,246,.35)">🎯 Target Zone</a>
       <button class="btn-icon" onclick="refresh()">↻ Refresh</button>
       <button class="btn-icon" onclick="logout()">Sign Out</button>
     </div>
@@ -960,40 +961,6 @@
       </div>
     </div><!-- /dormant-history-panel -->
 
-    <!-- ── TARGET ZONE SECTION ───────────────────────────────── -->
-    <div id="target-zone-panel" style="margin-top:16px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
-        <span style="font-weight:700;font-size:15px">🎯 Target Zone</span>
-        <span style="color:var(--text-dim);font-size:12px">Pump.fun coins ≥30 days old · MC $8K–$14K · waiting for a catalyst</span>
-        <span id="target-zone-count" style="background:rgba(139,92,246,.15);color:#a78bfa;border-radius:10px;padding:1px 8px;font-size:12px;font-weight:600"></span>
-        <span id="target-zone-updated" style="color:var(--text-dim);font-size:11px;margin-left:auto"></span>
-        <button onclick="loadTargetZone()" style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 10px;font-size:12px;cursor:pointer;color:var(--text)">↻ Refresh</button>
-      </div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px" id="target-zone-table">
-          <thead>
-            <tr style="border-bottom:1px solid var(--border);color:var(--text-dim);text-align:left">
-              <th style="padding:6px 8px;white-space:nowrap">#</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('name')">COIN ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap">CA</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('holders')" id="tz-th-holders">HOLDERS ▼</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('mc')">MCAP ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('age')">AGE ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('traded')">LAST TRADE ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('volume')">24H VOL ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('txns')">TXNS ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('change1h')">1H ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap;cursor:pointer" onclick="sortTargetZone('change24h')">24H ⇅</th>
-              <th style="padding:6px 8px;white-space:nowrap">LINKS</th>
-            </tr>
-          </thead>
-          <tbody id="target-zone-tbody">
-            <tr><td colspan="12" style="text-align:center;padding:20px;color:var(--text-dim)">Loading…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div><!-- /target-zone-panel -->
-
     <!-- ── MOVERS SECTION ─────────────────────────────────────── -->
     <div class="movers-section">
       <div class="movers-header">
@@ -1105,14 +1072,12 @@
     refresh()
     fetchMovers()
     loadDormantHistory()
-    loadTargetZone()
     // Retry after 8s in case first server poll hasn't completed yet
     setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 8_000)
     setTimeout(() => { if (allMovers.length === 0) fetchMovers() }, 20_000)
     refreshTimer = setInterval(refresh, 15000)
     moversTimer  = setInterval(fetchMovers, 30_000)
     setInterval(loadDormantHistory, 2 * 60_000) // refresh dormant history every 2 min
-    setInterval(loadTargetZone, 5 * 60_000)     // refresh target zone every 5 min
     loadApiStatus()
     setInterval(loadApiStatus, 3 * 60_000) // refresh API status every 3 min
   }
@@ -1672,100 +1637,6 @@
     } catch(e) {
       tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px;color:#f44336">Error loading history</td></tr>`
     }
-  }
-
-  // ── Target Zone ───────────────────────────────────────────────────────────
-  let tzSortKey = 'holders'
-  let tzSortDir = -1  // -1 = desc
-
-  async function loadTargetZone() {
-    const tbody  = document.getElementById('target-zone-tbody')
-    const countEl = document.getElementById('target-zone-count')
-    const updEl   = document.getElementById('target-zone-updated')
-    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:20px;color:var(--text-dim)">Loading…</td></tr>`
-    try {
-      const r = await fetch(`/api/target-zone?sort=${tzSortKey}&dir=${tzSortDir > 0 ? 'asc' : 'desc'}`, { headers: apiHeaders() })
-      const data = await r.json()
-      const coins = data.coins || []
-      countEl.textContent = `${coins.length} coin${coins.length !== 1 ? 's' : ''}`
-      if (data.lastPollAt) updEl.textContent = 'updated ' + timeAgo(data.lastPollAt)
-      renderTargetZone(coins)
-    } catch(e) {
-      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:20px;color:#f44336">Error loading target zone</td></tr>`
-    }
-  }
-
-  function sortTargetZone(key) {
-    if (tzSortKey === key) {
-      tzSortDir *= -1
-    } else {
-      tzSortKey = key
-      tzSortDir = -1
-    }
-    // Update header indicators
-    document.querySelectorAll('#target-zone-table th').forEach(th => {
-      const oc = th.getAttribute('onclick')
-      if (!oc) return
-      const arrow = tzSortDir > 0 ? ' ▲' : ' ▼'
-      if (oc.includes(`'${key}'`)) {
-        th.textContent = th.textContent.replace(/ [▲▼⇅]$/, '') + arrow
-      } else {
-        th.textContent = th.textContent.replace(/ [▲▼]$/, ' ⇅')
-      }
-    })
-    loadTargetZone()
-  }
-
-  function renderTargetZone(coins) {
-    const tbody = document.getElementById('target-zone-tbody')
-    if (!tbody) return
-    if (coins.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:20px;color:var(--text-dim)">No coins in target zone ($8K–$14K, ≥30d old)</td></tr>`
-      return
-    }
-
-    const fmtMc  = n => n >= 1e6 ? `$${(n/1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n/1e3).toFixed(1)}K` : `$${n.toFixed(0)}`
-    const fmtVol = n => n == null ? '<span style="color:#555">—</span>' : n >= 1e6 ? `$${(n/1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n/1e3).toFixed(1)}K` : `$${n.toFixed(0)}`
-    const fmtAge = h => h >= 24*365 ? `${Math.floor(h/24/365)}y ${Math.floor((h/24)%365)}d` : h >= 24*30 ? `${Math.floor(h/24/30)}mo` : h >= 24 ? `${Math.floor(h/24)}d` : `${h}h`
-    const fmtPct = n => n != null ? `<span style="color:${n>0?'#4caf50':n<0?'#f44336':'#888'}">${n>0?'+':''}${n.toFixed(1)}%</span>` : '<span style="color:#555">—</span>'
-    const fmtTraded = ts => {
-      const diff = Date.now() - ts
-      if (diff < 60*60*1000) return `${Math.floor(diff/60000)}m ago`
-      if (diff < 24*60*60*1000) return `${Math.floor(diff/3600000)}h ago`
-      return `${Math.floor(diff/86400000)}d ago`
-    }
-
-    tbody.innerHTML = coins.map((c, i) => {
-      const mint = c.mint
-      const shortMint = mint.slice(0,6)+'…'+mint.slice(-4)
-      const holdersHtml = c.holderCount != null
-        ? `<span style="color:#a78bfa;font-weight:600">${c.holderCount.toLocaleString()}</span>`
-        : '<span style="color:#555;font-size:11px">fetching…</span>'
-      return `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:5px 8px;color:var(--text-dim)">${i+1}</td>
-        <td style="padding:5px 8px">
-          <span style="font-weight:600">${escH(c.symbol)}</span>
-          <br><span style="color:var(--text-dim);font-size:10px">${escH(c.name)}</span>
-        </td>
-        <td style="padding:5px 8px">
-          <span class="mover-ca" onclick="copyMoverCA(this,'${mint}')" title="${mint}" style="font-size:11px;cursor:pointer">${shortMint}</span>
-          <a href="https://x.com/search?q=${encodeURIComponent(mint)}&src=typed_query&f=live" target="_blank" title="Search CA on X" style="color:var(--text-dim);text-decoration:none;font-size:13px;margin-left:4px" onmouseover="this.style.color='#1d9bf0'" onmouseout="this.style.color='var(--text-dim)'">↗</a>
-        </td>
-        <td style="padding:5px 8px;text-align:right">${holdersHtml}</td>
-        <td style="padding:5px 8px;text-align:right">${fmtMc(c.marketCap)}</td>
-        <td style="padding:5px 8px;text-align:right;color:var(--text-dim)">${fmtAge(c.ageHours)}</td>
-        <td style="padding:5px 8px;text-align:right;color:var(--text-dim)">${fmtTraded(c.lastTradeAt)}</td>
-        <td style="padding:5px 8px;text-align:right">${fmtVol(c.volume24h)}</td>
-        <td style="padding:5px 8px;text-align:right;color:var(--text-dim)">${c.txns24h ?? '—'}</td>
-        <td style="padding:5px 8px;text-align:right">${fmtPct(c.change1h)}</td>
-        <td style="padding:5px 8px;text-align:right">${fmtPct(c.change24h)}</td>
-        <td style="padding:5px 8px;white-space:nowrap">
-          <a href="https://dexscreener.com/solana/${mint}" target="_blank" style="color:#7eb8f7;text-decoration:none;font-size:11px" title="DexScreener">📈</a>
-          <a href="https://pump.fun/${mint}" target="_blank" style="color:#7eb8f7;text-decoration:none;font-size:11px;margin-left:4px" title="pump.fun">🎱</a>
-          <a href="https://axiom.trade/t/${mint}" target="_blank" style="color:#7eb8f7;text-decoration:none;font-size:11px;margin-left:4px" title="Axiom">📊</a>
-        </td>
-      </tr>`
-    }).join('')
   }
 
   function sortMovers(key) {
