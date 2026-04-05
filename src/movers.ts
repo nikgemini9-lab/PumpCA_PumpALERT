@@ -76,7 +76,7 @@ const DORMANT_MOVE_24H    = 15        // % — slow-build: +15% over 24h
 // Override with env: DORMANT_MAX_WAKE_MC (in USD)
 const DORMANT_MAX_WAKE_MC = parseInt(process.env.DORMANT_MAX_WAKE_MC ?? '10000') || 10000
 const HISTORY_MAX_MS   = 25 * 60 * 60_000  // 25 h of MC snapshots
-const MAX_MINT_CACHE   = 1000         // rolling window of known mints (larger = fewer evictions of old dormant tokens)
+const MAX_MINT_CACHE   = 3000         // large enough to hold TZ scan results + active tokens without evicting dormants
 const MIN_MC_USD       = 2_900        // ignore tokens below $2.9K market cap
 
 // Target Zone — coins older than 30 days sitting in the $8K-$14K MC range.
@@ -88,6 +88,11 @@ const TARGET_ZONE_MAX_MC   = parseInt(process.env.TARGET_ZONE_MAX_MC ?? '14000')
 const HOLDER_COUNT_TTL_MS  = 15 * 60_000
 // Pump.fun individual coin API — returns holder_count
 const PUMPFUN_COIN_API     = 'https://frontend-api.pump.fun/coins'
+// Target Zone active scanner: pages through pump.fun by MC desc to find dormant coins
+// in range that are NEVER active enough to appear in normal discovery.
+// Scans up to MAX pages; stops early when the whole page is below the floor.
+const TARGET_ZONE_SCAN_MS   = 10 * 60_000   // every 10 min
+const TARGET_ZONE_SCAN_PAGES = 60            // up to 3 000 coins (60 × 50)
 
 // ── Internal types ─────────────────────────────────────────────────────────────
 
@@ -237,9 +242,10 @@ export class MoversPoller extends EventEmitter {
   private graduationEmitted       = new Set<string>()
   // Mints already persisted to dormant_candidates table (avoid redundant writes)
   private dormantCandidatesSaved  = new Set<string>()
-  private discoverTimer:  NodeJS.Timeout | null = null
-  private enrichTimer:    NodeJS.Timeout | null = null
-  private externalTimer:  NodeJS.Timeout | null = null
+  private discoverTimer:    NodeJS.Timeout | null = null
+  private enrichTimer:      NodeJS.Timeout | null = null
+  private externalTimer:    NodeJS.Timeout | null = null
+  private targetZoneTimer:  NodeJS.Timeout | null = null
   // Alternates which program is polled each discover() call to halve Helius Enhanced Tx credits.
   // Cycle 1 → PUMP_PROGRAM (bonding curve), Cycle 2 → PUMP_AMM (graduated), repeat.
   private discoverFlip = false
@@ -277,21 +283,33 @@ export class MoversPoller extends EventEmitter {
       ENRICH_MS
     )
     // External movers scanner — discovers OLD tokens currently pumping via Birdeye/DexScreener
-    // boosts/Axiom. Runs every 5 min. Catches tokens never seen in bonding-curve discovery.
+    // boosts/Axiom. Runs every 2 min. Catches tokens never seen in bonding-curve discovery.
     this.discoverExternalMovers().catch(err => console.error('[Movers] external scan error:', err?.message))
     this.externalTimer = setInterval(
       () => this.discoverExternalMovers().catch(err => console.error('[Movers] external scan error:', err?.message)),
       EXTERNAL_DISCOVER_MS
     )
+    // Target Zone scanner — proactively pages pump.fun by MC desc to find dormant
+    // coins in the $8K-$14K range that never trade (invisible to all other sources).
+    // Delay first run by 30s so the initial enrich() cycle completes first.
+    setTimeout(
+      () => this.scanTargetZoneCoins().catch(err => console.error('[Movers] TZ scan error:', err?.message)),
+      30_000
+    )
+    this.targetZoneTimer = setInterval(
+      () => this.scanTargetZoneCoins().catch(err => console.error('[Movers] TZ scan error:', err?.message)),
+      TARGET_ZONE_SCAN_MS
+    )
     console.log(
-      `[Movers] Poller started — discovery ${POLL_MS / 60_000} min, enrichment ${ENRICH_MS / 1_000} s, external scan 5 min`
+      `[Movers] Poller started — discovery ${POLL_MS / 60_000} min, enrichment ${ENRICH_MS / 1_000} s, external scan 2 min, TZ scan ${TARGET_ZONE_SCAN_MS / 60_000} min`
     )
   }
 
   stop(): void {
-    if (this.discoverTimer)  { clearInterval(this.discoverTimer);  this.discoverTimer  = null }
-    if (this.enrichTimer)    { clearInterval(this.enrichTimer);    this.enrichTimer    = null }
-    if (this.externalTimer)  { clearInterval(this.externalTimer);  this.externalTimer  = null }
+    if (this.discoverTimer)   { clearInterval(this.discoverTimer);   this.discoverTimer   = null }
+    if (this.enrichTimer)     { clearInterval(this.enrichTimer);     this.enrichTimer     = null }
+    if (this.externalTimer)   { clearInterval(this.externalTimer);   this.externalTimer   = null }
+    if (this.targetZoneTimer) { clearInterval(this.targetZoneTimer); this.targetZoneTimer = null }
   }
 
   getMovers(): MoverEntry[] { return Array.from(this.movers.values()) }
@@ -357,7 +375,99 @@ export class MoversPoller extends EventEmitter {
     }
   }
 
-  // ── External movers scan (every 5 min) ────────────────────────────────────
+  // ── Target Zone proactive scanner (every 10 min) ──────────────────────────
+  // Pages through pump.fun sorted by market_cap DESC, collecting every coin that:
+  //   • is in the MC target range (with a generous buffer for DexScreener corrections)
+  //   • is old enough (>= TARGET_ZONE_AGE_DAYS)
+  // These coins are typically NEVER traded — so they never appear in Helius discovery
+  // or the external recent-trade scan. Without this scan, the target zone only shows
+  // coins that happen to have been active recently, missing the true "sleeping" pool.
+  //
+  // Stopping heuristic: once an entire page has NO coin above the floor MC, we've
+  // passed the target band and can stop paging early.
+
+  private async scanTargetZoneCoins(): Promise<void> {
+    const now         = Date.now()
+    const ageCutoffMs = TARGET_ZONE_AGE_DAYS * 24 * 60 * 60_000
+    // Scan a wider MC window so DexScreener corrections don't push coins out of range
+    const scanFloor = TARGET_ZONE_MIN_MC * 0.6   // $4.8K — wider net
+    const scanCeil  = TARGET_ZONE_MAX_MC * 2.0   // $28K — wider net
+    let added = 0
+    let pagesScanned = 0
+
+    for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
+      let coins: any[]
+      try {
+        const res = await axios.get(PUMPFUN_COINS_API, {
+          params: {
+            sort:        'market_cap',
+            order:       'DESC',
+            limit:       50,
+            offset:      page * 50,
+            includeNsfw: false,
+          },
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+          timeout: 8_000,
+        })
+        coins = Array.isArray(res.data) ? res.data : []
+      } catch (err: any) {
+        console.warn('[Movers] TZ scan page error:', err?.message)
+        break
+      }
+      if (coins.length === 0) break
+      pagesScanned++
+
+      let aboveFloor = 0
+      for (const coin of coins) {
+        const mc:        number = coin.usd_market_cap ?? 0
+        const createdAt: number = coin.created_timestamp ?? now
+        const ageDays = (now - createdAt) / (24 * 60 * 60_000)
+        if (mc > scanFloor) aboveFloor++
+
+        if (mc >= scanFloor && mc <= scanCeil && ageDays >= TARGET_ZONE_AGE_DAYS) {
+          const mint: string | undefined = coin.mint
+          if (!mint || mint === WSOL) continue
+          const existing = this.mintCache.get(mint)
+          if (existing) {
+            // Refresh holder count if stale
+            if (typeof coin.holder_count === 'number' &&
+                (!existing.holderCountAt || now - existing.holderCountAt > HOLDER_COUNT_TTL_MS)) {
+              existing.holderCount   = coin.holder_count
+              existing.holderCountAt = now
+            }
+            // Update lastTradeAt if pump.fun has a newer timestamp
+            const lastTrade: number = coin.last_trade_timestamp ?? 0
+            if (lastTrade > existing.lastTradeAt) existing.lastTradeAt = lastTrade
+          } else {
+            this.mintCache.set(mint, {
+              name:            coin.name   || mint.slice(0, 8),
+              symbol:          coin.symbol || '?',
+              firstSeen:       createdAt,
+              lastTradeAt:     coin.last_trade_timestamp ?? createdAt,
+              graduated:       false,
+              metadataFetched: true,  // name/symbol already from pump.fun
+              seenCount:       2,     // skip single-poll metadata gate
+              holderCount:     typeof coin.holder_count === 'number' ? coin.holder_count : undefined,
+              holderCountAt:   typeof coin.holder_count === 'number' ? now : undefined,
+            })
+            added++
+          }
+        }
+      }
+
+      // If entire page is below our floor, we've passed the target band — stop early
+      if (aboveFloor === 0) break
+
+      // Small pause between pages to avoid hammering pump.fun
+      await new Promise(r => setTimeout(r, 200))
+    }
+
+    console.log(
+      `[Movers] TZ scan: ${pagesScanned} pages, +${added} new mints → cache ${this.mintCache.size}`
+    )
+  }
+
+  // ── External movers scan (every 2 min) ────────────────────────────────────
   // Finds OLD tokens currently pumping via external data sources. This is the
   // critical path for tokens like "Happy Birthday Solana" or DIEGO (1y) that
   // are graduated, trading on Raydium, and thus invisible to bonding-curve discovery.
