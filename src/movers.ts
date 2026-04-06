@@ -357,7 +357,12 @@ export class MoversPoller extends EventEmitter {
 
   /**
    * Returns coins in the $8K-$14K MC band that are at least 30 days old.
-   * Source: tzSnapshot populated by scanTargetZoneCoins() every 10 min.
+   *
+   * Two sources:
+   *   1. tzSnapshot — bonding-curve coins found by scanTargetZoneCoins() (pump.fun API)
+   *   2. this.movers — graduated tokens (Raydium/pumpswap) that meet TZ age+MC criteria
+   *      Old graduated tokens never appear on frontend-api.pump.fun/coins so the pump.fun
+   *      scan misses them entirely. The movers cache finds them via Raydium/GeckoTerminal.
    *
    * Each entry is enriched with DexScreener/bonding-curve data if the coin is
    * already tracked in `movers`; otherwise falls back to raw pump.fun API data
@@ -365,15 +370,22 @@ export class MoversPoller extends EventEmitter {
    */
   getTargetZone(): MoverEntry[] {
     const now = Date.now()
-    return this.tzSnapshot.map(raw => {
+    const seen = new Set<string>()
+    const result: MoverEntry[] = []
+
+    // ── Source 1: pump.fun TZ scan snapshot (bonding-curve coins) ────────────
+    for (const raw of this.tzSnapshot) {
+      seen.add(raw.mint)
       // Prefer the fully-enriched MoverEntry when available (has DexScreener data)
       const live = this.movers.get(raw.mint)
-      if (live) return live
-
+      if (live) {
+        result.push(live)
+        continue
+      }
       // Fall back to raw pump.fun data — no price changes or volume, but shows
       // name, age, MC, and holders which is enough for the watchlist.
       const ageHours = Math.floor((now - raw.createdAt) / 3_600_000)
-      const entry: MoverEntry = {
+      result.push({
         mint:        raw.mint,
         name:        raw.name,
         symbol:      raw.symbol,
@@ -390,9 +402,23 @@ export class MoversPoller extends EventEmitter {
         graduated:   false,
         isDormant:   false,
         holderCount: raw.holderCount,
+      })
+    }
+
+    // ── Source 2: graduated movers meeting TZ criteria ────────────────────────
+    // These are old tokens trading on Raydium/pumpswap — invisible to the pump.fun
+    // scan but fully enriched with DexScreener data (price changes, volume, etc.)
+    for (const [mint, entry] of this.movers) {
+      if (seen.has(mint)) continue
+      const ageDays = entry.ageHours / 24
+      if (ageDays >= TARGET_ZONE_AGE_DAYS &&
+          entry.marketCap >= TARGET_ZONE_MIN_MC &&
+          entry.marketCap <= TARGET_ZONE_MAX_MC) {
+        result.push(entry)
       }
-      return entry
-    })
+    }
+
+    return result
   }
 
   // ── Target Zone holder count fetcher ─────────────────────────────────────
