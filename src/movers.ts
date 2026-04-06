@@ -771,9 +771,16 @@ export class MoversPoller extends EventEmitter {
     const now      = Date.now()
     const solPrice = await getSolPrice()
 
-    // 2. Enrich ALL cached mints via DexScreener (graduated tokens)
-    const allMints = Array.from(this.mintCache.keys())
-    const dexMap   = await this.fetchDexData(allMints)
+    // 2. Enrich graduated tokens via DexScreener.
+    // Skip mints that are known bonding-curve coins (graduated=false + pumpfunMc set) —
+    // DexScreener has no pair for them and including them just wastes batch slots and
+    // triggers rate limiting when the cache contains hundreds of TZ scanner coins.
+    const allMints  = Array.from(this.mintCache.keys())
+    const dexMints  = allMints.filter(m => {
+      const rec = this.mintCache.get(m)!
+      return rec.graduated || rec.pumpfunMc === undefined
+    })
+    const dexMap   = await this.fetchDexData(dexMints)
 
     // 3. Bonding curve state for mints not found on DexScreener.
     // Skip coins that already have a pumpfunMc fallback — fetching the bonding curve
@@ -1038,10 +1045,11 @@ export class MoversPoller extends EventEmitter {
     const result = new Map<string, DexPairData>()
     if (mints.length === 0) return result
 
-    try {
-      const BATCH = 30
-      for (let i = 0; i < mints.length; i += BATCH) {
-        const batch = mints.slice(i, i + BATCH)
+    const BATCH = 30
+    let errors = 0
+    for (let i = 0; i < mints.length; i += BATCH) {
+      const batch = mints.slice(i, i + BATCH)
+      try {
         const res   = await axios.get(`${DEX_API}/${batch.join(',')}`, {
           timeout: 10_000,
           headers: { 'User-Agent': 'PumpAlert/1.0' },
@@ -1069,11 +1077,19 @@ export class MoversPoller extends EventEmitter {
             })
           }
         }
+      } catch (err: any) {
+        errors++
+        console.warn(`[Movers] DexScreener batch ${i / BATCH + 1} error:`, err?.message)
+        // Back off on rate-limit (429) or server errors; continue with remaining batches
+        if (err?.response?.status === 429 || (err?.response?.status ?? 0) >= 500) {
+          await new Promise(r => setTimeout(r, 2_000))
+        }
       }
-    } catch (err: any) {
-      console.warn('[Movers] DexScreener error:', err?.message)
+      // Throttle between batches to stay within DexScreener's rate limit
+      if (i + BATCH < mints.length) await new Promise(r => setTimeout(r, 200))
     }
 
+    if (errors > 0) console.warn(`[Movers] DexScreener: ${errors} batch error(s), ${result.size} tokens enriched`)
     return result
   }
 
