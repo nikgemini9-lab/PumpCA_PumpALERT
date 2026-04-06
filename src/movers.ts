@@ -411,29 +411,28 @@ export class MoversPoller extends EventEmitter {
     const scanFloor = TARGET_ZONE_MIN_MC * 0.4   // $3.2K
     const scanCeil  = TARGET_ZONE_MAX_MC * 3.0   // $42K
 
-    // ── Strategy: sort by last_trade_timestamp ASC ────────────────────────────
-    // Coins that last traded the LONGEST AGO come first. These are exactly our
-    // targets: dormant old tokens with low MC sitting untouched.
+    // ── Strategy: sort by market_cap DESC ────────────────────────────────────
+    // Pages from highest MC downward. We collect every coin in the scan window
+    // ($3.2K–$42K) that is old enough (>= TARGET_ZONE_AGE_DAYS). This covers ALL
+    // coins in the target MC range regardless of when they last traded — both
+    // dormant coins AND coins that traded recently but still sit in the $8K–$14K band.
     //
     // We do NOT use min/max_market_cap server-side — those params return a fixed
     // cap of ~22 results from pump.fun regardless of pagination. Instead we
     // filter MC client-side from the usd_market_cap field on each coin.
     //
-    // Stop when we hit coins whose last_trade_timestamp is within the last 7 days —
-    // at that point we're into actively-traded tokens that regular discovery already
-    // catches via Helius Enhanced Tx and external movers scan.
-    const RECENT_CUTOFF_MS = 7 * 24 * 60 * 60_000   // 7 days
+    // Stop once an entire page has no coin above the scan floor — we've dropped
+    // below the target band and all remaining coins have lower MC.
     let added = 0
     let pages = 0
-    let recentConsecutive = 0
 
     for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
       let coins: any[]
       try {
         const res = await axios.get(PUMPFUN_COINS_API, {
           params: {
-            sort:        'last_trade_timestamp',
-            order:       'ASC',
+            sort:        'market_cap',
+            order:       'DESC',
             limit:       50,
             offset:      page * 50,
             includeNsfw: false,
@@ -449,21 +448,15 @@ export class MoversPoller extends EventEmitter {
       if (coins.length === 0) break
       pages++
 
-      let recentOnPage = 0
+      let aboveFloor = 0
       for (const coin of coins) {
-        const mc: number          = coin.usd_market_cap ?? 0
-        const lastTrade: number   = coin.last_trade_timestamp ?? 0
-        if (now - lastTrade < RECENT_CUTOFF_MS) recentOnPage++
+        const mc: number = coin.usd_market_cap ?? 0
+        if (mc >= scanFloor) aboveFloor++
         added += this.seedCoinToCache(coin, mc, scanFloor, scanCeil, now)
       }
 
-      // Stop when the majority of the page has traded within 7 days —
-      // we've reached the active zone that Helius/external scan already covers.
-      if (recentOnPage > coins.length * 0.5) {
-        if (++recentConsecutive >= 3) break
-      } else {
-        recentConsecutive = 0
-      }
+      // Stop once the entire page is below the scan floor — no more target coins exist.
+      if (aboveFloor === 0) break
 
       await new Promise(r => setTimeout(r, 120))
     }
