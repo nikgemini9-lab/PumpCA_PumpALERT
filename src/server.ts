@@ -15,7 +15,7 @@
  *   DELETE /api/wallets/:address  — remove wallet
  *   GET  /api/alerts              — recent 50 alerts
  *   GET  /api/users               — configured user names (no chat IDs)
- *   GET  /api/target-zone         — pump.fun coins ≥30d old, MC $8K-$14K (sortable)
+ *   GET  /api/target-zone         — ALL pump.fun coins at $8K-$14K MC, any age (sortable)
  *
  * Webhook (no auth check — Helius uses its own authHeader mechanism):
  *   POST /api/webhook/helius      — receives Helius enhanced transaction events
@@ -470,8 +470,8 @@ export function startServer(
   })
 
   // ── GET /api/target-zone ─────────────────────────────────────────────────
-  // Returns pump.fun coins >= 30 days old with MC in the $8K-$14K range.
-  // These are "sleeping" coins with remaining holders — good pre-pump watchlist.
+  // Returns ALL pump.fun coins currently in the $8K-$14K MC range (any age).
+  // Clients apply age/MC filters themselves. Good watchlist for event-driven plays.
   app.get('/api/target-zone', (req: Request, res: Response) => {
     const status = moversPoller.getStatus()
     const coins  = moversPoller.getTargetZone()

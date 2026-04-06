@@ -154,6 +154,17 @@ interface Snap { ts: number; mc: number }
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
+/** Raw pump.fun coin data collected during target-zone scans (no age filter). */
+interface TzRaw {
+  mint:         string
+  name:         string
+  symbol:       string
+  createdAt:    number  // epoch ms — from pump.fun created_timestamp
+  lastTradeAt:  number  // epoch ms
+  pumpfunMc:    number  // usd_market_cap from pump.fun API
+  holderCount?: number
+}
+
 export interface MoverEntry {
   mint:               string
   name:               string
@@ -255,6 +266,9 @@ export class MoversPoller extends EventEmitter {
   private mintCache   = new Map<string, MintRecord>()   // mint → record
   private history     = new Map<string, Snap[]>()
   private movers      = new Map<string, MoverEntry>()
+  // ALL coins found in the 8-14k MC range during the latest TZ scan (any age).
+  // Separate from mintCache so young coins don't bloat or evict dormant candidates.
+  private tzSnapshot: TzRaw[] = []
   // mint → timestamp of last dormant alert; allows re-alerting after 12h
   private dormantSeen = new Map<string, number>()
   private graduationEmitted       = new Set<string>()
@@ -342,17 +356,44 @@ export class MoversPoller extends EventEmitter {
   }
 
   /**
-   * Returns all tracked coins that are >= 30 days old and have MC in the
-   * target zone ($8K-$14K by default). These are "sleeping" coins with remaining
-   * holders that could wake up on the next narrative / OG event.
+   * Returns ALL coins currently in the $8K-$14K MC band, regardless of age.
+   * Source: tzSnapshot populated by scanTargetZoneCoins() every 10 min.
+   *
+   * Each entry is enriched with DexScreener/bonding-curve data if the coin is
+   * already tracked in `movers`; otherwise falls back to raw pump.fun API data
+   * (MC, age, holders). The frontend UI has client-side age/MC filters so users
+   * can narrow to e.g. ≥30 days themselves.
    */
   getTargetZone(): MoverEntry[] {
-    const minAgeDays = TARGET_ZONE_AGE_DAYS
-    return Array.from(this.movers.values()).filter(e =>
-      e.ageHours / 24 >= minAgeDays &&
-      e.marketCap >= TARGET_ZONE_MIN_MC &&
-      e.marketCap <= TARGET_ZONE_MAX_MC
-    )
+    const now = Date.now()
+    return this.tzSnapshot.map(raw => {
+      // Prefer the fully-enriched MoverEntry when available (has DexScreener data)
+      const live = this.movers.get(raw.mint)
+      if (live) return live
+
+      // Fall back to raw pump.fun data — no price changes or volume, but shows
+      // name, age, MC, and holders which is enough for the watchlist.
+      const ageHours = Math.floor((now - raw.createdAt) / 3_600_000)
+      const entry: MoverEntry = {
+        mint:        raw.mint,
+        name:        raw.name,
+        symbol:      raw.symbol,
+        marketCap:   raw.pumpfunMc,
+        ageHours,
+        createdAt:   raw.createdAt,
+        lastTradeAt: raw.lastTradeAt,
+        change5m:    null,
+        change1h:    null,
+        change6h:    null,
+        change24h:   null,
+        volume24h:   null,
+        txns24h:     null,
+        graduated:   false,
+        isDormant:   false,
+        holderCount: raw.holderCount,
+      }
+      return entry
+    })
   }
 
   // ── Target Zone holder count fetcher ─────────────────────────────────────
@@ -413,18 +454,22 @@ export class MoversPoller extends EventEmitter {
 
     // ── Strategy: sort by market_cap DESC ────────────────────────────────────
     // Pages from highest MC downward. We collect every coin in the scan window
-    // ($3.2K–$42K) that is old enough (>= TARGET_ZONE_AGE_DAYS). This covers ALL
-    // coins in the target MC range regardless of when they last traded — both
-    // dormant coins AND coins that traded recently but still sit in the $8K–$14K band.
+    // ($3.2K–$42K). This covers ALL coins in the MC range regardless of age or
+    // trading activity — both dormant coins AND freshly-launched ones that stalled.
     //
     // We do NOT use min/max_market_cap server-side — those params return a fixed
     // cap of ~22 results from pump.fun regardless of pagination. Instead we
     // filter MC client-side from the usd_market_cap field on each coin.
     //
-    // Stop once an entire page has no coin above the scan floor — we've dropped
-    // below the target band and all remaining coins have lower MC.
+    // Two output paths:
+    //   tzSnapshot  — ALL coins strictly in [TARGET_ZONE_MIN_MC, TARGET_ZONE_MAX_MC]
+    //                 regardless of age. Replaces previous snapshot atomically at end.
+    //   mintCache   — only 30+ day old coins, for dormant-alert tracking.
+    //
+    // Stop once an entire page is below the scan floor — no more target coins exist.
     let added = 0
     let pages = 0
+    const freshTz: TzRaw[] = []  // accumulate strict-range coins (any age)
 
     for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
       let coins: any[]
@@ -452,6 +497,24 @@ export class MoversPoller extends EventEmitter {
       for (const coin of coins) {
         const mc: number = coin.usd_market_cap ?? 0
         if (mc >= scanFloor) aboveFloor++
+
+        // Collect ALL coins in the strict target band (any age) for tzSnapshot
+        if (mc >= TARGET_ZONE_MIN_MC && mc <= TARGET_ZONE_MAX_MC) {
+          const mint: string | undefined = coin.mint
+          if (mint && mint !== WSOL) {
+            freshTz.push({
+              mint,
+              name:        coin.name   || mint.slice(0, 8),
+              symbol:      coin.symbol || '?',
+              createdAt:   coin.created_timestamp ?? now,
+              lastTradeAt: coin.last_trade_timestamp ?? (coin.created_timestamp ?? now),
+              pumpfunMc:   mc,
+              holderCount: typeof coin.holder_count === 'number' ? coin.holder_count : undefined,
+            })
+          }
+        }
+
+        // Seed mintCache only for 30+ day old coins (dormant-alert tracking)
         added += this.seedCoinToCache(coin, mc, scanFloor, scanCeil, now)
       }
 
@@ -461,7 +524,10 @@ export class MoversPoller extends EventEmitter {
       await new Promise(r => setTimeout(r, 120))
     }
 
-    console.log(`[Movers] TZ scan: ${pages} pages, +${added} new → cache ${this.mintCache.size}`)
+    // Replace snapshot atomically so readers always see a complete list
+    this.tzSnapshot = freshTz
+
+    console.log(`[Movers] TZ scan: ${pages} pages, +${added} mintCache new, ${freshTz.length} in TZ snapshot → cache ${this.mintCache.size}`)
   }
 
   /** Seed a pump.fun coin API response object into mintCache if it's in the scan window.
