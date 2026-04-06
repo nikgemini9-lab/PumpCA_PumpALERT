@@ -42,7 +42,17 @@ const PUMP_PROGRAM     = new PublicKey(PUMP_PROGRAM_STR)
 // Pump.fun AMM (pumpswap) — where graduated pump.fun tokens trade after the bonding curve.
 // Watching this lets us catch OLD dormant tokens (any age) that are currently active.
 const PUMP_AMM_STR     = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'
+// Raydium AMM V4 — the main Solana DEX for non-pump.fun tokens (pre-pumpswap graduates,
+// legacy Raydium pairs, any old Solana token trading on Raydium).
+// Watching this via Helius gives TRUE on-chain discovery for all Raydium pairs.
+const RAYDIUM_AMM_STR  = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8'
+// Orca Whirlpool — concentrated liquidity DEX; covers tokens NOT on Raydium or pump.fun.
+const ORCA_WHIRLPOOL_STR = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'
 const WSOL             = 'So11111111111111111111111111111111111111112'
+// Stablecoins — filter these out when extracting the "interesting" side of a pair
+const USDC             = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+const USDT             = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
+const STABLECOINS      = new Set([WSOL, USDC, USDT])
 
 const HELIUS_API = 'https://api.helius.xyz/v0'
 const DEX_API    = 'https://api.dexscreener.com/latest/dex/tokens'
@@ -52,11 +62,17 @@ const CMC_API    = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/l
 const BIRDEYE_TOKENLIST_API  = 'https://public-api.birdeye.so/defi/tokenlist'
 const DEX_BOOSTS_API         = 'https://api.dexscreener.com/token-boosts/active/v1'
 // GeckoTerminal — free, no auth. Covers ALL Solana DEXes (Raydium, Orca, etc).
-// trending_pools returns up to 20 currently-hot pools regardless of token age.
-const GECKO_TRENDING_URL     = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools'
+// trending_pools returns up to 20 currently-hot pools per page; paginate 3 pages = 60 pools.
+const GECKO_TRENDING_BASE    = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools'
 // GeckoTerminal top pools by 24h volume — h24_volume_usd_desc is a confirmed-valid sort.
 // High volume reliably correlates with active movers. Paginate 3 pages = 60 pools.
 const GECKO_VOLUME_BASE      = 'https://api.geckoterminal.com/api/v2/networks/solana/pools?sort=h24_volume_usd_desc'
+// GeckoTerminal new pools — recently created Solana pairs across ALL DEXes.
+const GECKO_NEW_POOLS_URL    = 'https://api.geckoterminal.com/api/v2/networks/solana/new_pools'
+// Raydium v3 pools API — returns ALL Raydium pool types (Standard/CLMM/CPMM) sorted by
+// 24h volume. This is the primary "from Solana chain" source for non-pump.fun pairs.
+// 3 pages × 100 pools = 300 active Raydium pairs discovered per cycle.
+const RAYDIUM_POOLS_API      = 'https://api-v3.raydium.io/pools/info/list'
 // Pump.fun coins API — recently-active pump.fun tokens, including some graduated ones.
 const PUMPFUN_COINS_API      = 'https://frontend-api.pump.fun/coins'
 const EXTERNAL_DISCOVER_MS   = 2 * 60_000  // every 2 minutes
@@ -248,9 +264,10 @@ export class MoversPoller extends EventEmitter {
   private enrichTimer:      NodeJS.Timeout | null = null
   private externalTimer:    NodeJS.Timeout | null = null
   private targetZoneTimer:  NodeJS.Timeout | null = null
-  // Alternates which program is polled each discover() call to halve Helius Enhanced Tx credits.
-  // Cycle 1 → PUMP_PROGRAM (bonding curve), Cycle 2 → PUMP_AMM (graduated), repeat.
-  private discoverFlip = false
+  // Rotates through all monitored programs each discover() call to spread Helius credit usage.
+  // Cycle: PUMP_PROGRAM (bonding curve) → PUMP_AMM (pumpswap) → RAYDIUM_AMM → ORCA → repeat.
+  // Each program is covered once per 4 × POLL_MS = 80 min at the default 20-min interval.
+  private discoverIndex = 0
   private lastPollAt: number | null = null
   private lastError:  string | null = null
   private _conn:      Connection | null = null  // reuse to avoid GET_SLOT overhead
@@ -389,97 +406,69 @@ export class MoversPoller extends EventEmitter {
   // passed the target band and can stop paging early.
 
   private async scanTargetZoneCoins(): Promise<void> {
-    const now      = Date.now()
-    // Wide MC window so enrich()/DexScreener can correct the exact value later.
+    const now = Date.now()
+    // Generous MC window — pumpfunMc vs DexScreener FDV can differ; enrich() corrects it
     const scanFloor = TARGET_ZONE_MIN_MC * 0.4   // $3.2K
     const scanCeil  = TARGET_ZONE_MAX_MC * 3.0   // $42K
 
-    // ── Pass A: pump.fun with min/max_market_cap server-side filter ──────────
-    // pump.fun supports min_market_cap / max_market_cap params to narrow results.
-    // Combined with sort=last_reply (stable default sort) this returns ALL coins
-    // in the MC band regardless of activity, so we just paginate until empty.
-    // NO early stop — we can't know how many pages exist without scanning them all.
+    // ── Strategy: sort by last_trade_timestamp ASC ────────────────────────────
+    // Coins that last traded the LONGEST AGO come first. These are exactly our
+    // targets: dormant old tokens with low MC sitting untouched.
+    //
+    // We do NOT use min/max_market_cap server-side — those params return a fixed
+    // cap of ~22 results from pump.fun regardless of pagination. Instead we
+    // filter MC client-side from the usd_market_cap field on each coin.
+    //
+    // Stop when we hit coins whose last_trade_timestamp is within the last 7 days —
+    // at that point we're into actively-traded tokens that regular discovery already
+    // catches via Helius Enhanced Tx and external movers scan.
+    const RECENT_CUTOFF_MS = 7 * 24 * 60 * 60_000   // 7 days
     let added = 0
-    let pagesA = 0
+    let pages = 0
+    let recentConsecutive = 0
+
     for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
       let coins: any[]
       try {
         const res = await axios.get(PUMPFUN_COINS_API, {
           params: {
-            limit:           50,
-            offset:          page * 50,
-            sort:            'last_reply',
-            order:           'DESC',
-            min_market_cap:  Math.floor(scanFloor),
-            max_market_cap:  Math.ceil(scanCeil),
-            includeNsfw:     false,
+            sort:        'last_trade_timestamp',
+            order:       'ASC',
+            limit:       50,
+            offset:      page * 50,
+            includeNsfw: false,
           },
           headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
           timeout: 10_000,
         })
         coins = Array.isArray(res.data) ? res.data : []
       } catch (err: any) {
-        console.warn('[Movers] TZ pass-A error (page', page, '):', err?.message)
+        console.warn('[Movers] TZ scan error (page', page, '):', err?.message)
         break
       }
-      if (coins.length === 0) break   // API returned empty page → done
-      pagesA++
+      if (coins.length === 0) break
+      pages++
 
+      let recentOnPage = 0
       for (const coin of coins) {
-        const mc: number = coin.usd_market_cap ?? 0
+        const mc: number          = coin.usd_market_cap ?? 0
+        const lastTrade: number   = coin.last_trade_timestamp ?? 0
+        if (now - lastTrade < RECENT_CUTOFF_MS) recentOnPage++
         added += this.seedCoinToCache(coin, mc, scanFloor, scanCeil, now)
       }
 
-      // If a full page came back with < 5 coins we should keep anyway,
-      // don't stop — continue until the API returns an empty page.
+      // Stop when the majority of the page has traded within 7 days —
+      // we've reached the active zone that Helius/external scan already covers.
+      if (recentOnPage > coins.length * 0.5) {
+        if (++recentConsecutive >= 3) break
+      } else {
+        recentConsecutive = 0
+      }
+
       await new Promise(r => setTimeout(r, 120))
     }
-    console.log(`[Movers] TZ pass-A (min/max MC filter): ${pagesA} pages, +${added} new → cache ${this.mintCache.size}`)
 
-    // ── Pass B: fallback MC-sort scan (in case pass A filter is unsupported) ──
-    // If pump.fun ignores min/max_market_cap (returns the same full dataset),
-    // pass A would have added lots of out-of-range coins. We detect this by
-    // checking if pass A found suspiciously many coins per page on page 1.
-    // In that case, scan by usd_market_cap DESC without an MC filter; stop when
-    // 10 consecutive pages are all below the floor (sort is working → we've passed band).
-    let addedB = 0
-    let pagesB = 0
-    {
-      let consecutiveBelowFloor = 0
-      for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
-        let coins: any[]
-        try {
-          const res = await axios.get(PUMPFUN_COINS_API, {
-            params: { sort: 'usd_market_cap', order: 'DESC', limit: 50, offset: page * 50, includeNsfw: false },
-            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-            timeout: 10_000,
-          })
-          coins = Array.isArray(res.data) ? res.data : []
-        } catch (err: any) {
-          console.warn('[Movers] TZ pass-B error (page', page, '):', err?.message)
-          break
-        }
-        if (coins.length === 0) break
-        pagesB++
-
-        let aboveFloor = 0
-        for (const coin of coins) {
-          const mc: number = coin.usd_market_cap ?? 0
-          if (mc > scanFloor) aboveFloor++
-          addedB += this.seedCoinToCache(coin, mc, scanFloor, scanCeil, now)
-        }
-
-        // Only use early stop for pass B (MC sort) — require 10 consecutive empty pages.
-        // This way a few random zero-MC pages won't stop us prematurely.
-        if (aboveFloor === 0) {
-          if (++consecutiveBelowFloor >= 10) break
-        } else {
-          consecutiveBelowFloor = 0
-        }
-        await new Promise(r => setTimeout(r, 120))
-      }
-    }
-    console.log(`[Movers] TZ pass-B (MC sort): ${pagesB} pages, +${addedB} new → cache ${this.mintCache.size}`)
+    console.log(`[Movers] TZ scan: ${pages} pages, +${added} new → cache ${this.mintCache.size}`)
   }
 
   /** Seed a pump.fun coin API response object into mintCache if it's in the scan window.
@@ -544,24 +533,83 @@ export class MoversPoller extends EventEmitter {
       return addr && addr !== WSOL ? addr : undefined
     }
 
-    // 1. GeckoTerminal trending pools — free, no auth, covers ALL Solana DEXes including old Raydium.
-    //    This is the primary free source for dormant sleepers waking up on any DEX.
+    // 1. Raydium v3 pools API — the primary "from Solana chain" source for non-pump.fun pairs.
+    //    Returns ALL Raydium pool types (Standard AMM / CLMM / CPMM) sorted by 24h volume.
+    //    3 pages × 100 pools = up to 300 active Raydium pairs per cycle.
+    //    This replaces the pump.fun-only discovery that was capped at ~22 results.
+    {
+      let raydiumAdded = 0
+      for (let page = 1; page <= 3; page++) {
+        try {
+          const res = await axios.get(RAYDIUM_POOLS_API, {
+            params: {
+              poolType:      'all',
+              poolSortField: 'volume24h',
+              sortType:      'desc',
+              pageSize:      100,
+              page,
+            },
+            headers: { Accept: 'application/json' },
+            timeout: 12_000,
+          })
+          const pools: any[] = res.data?.data?.data ?? []
+          for (const pool of pools) {
+            // Each pool has mintA + mintB; add whichever side isn't a stablecoin/SOL
+            for (const addr of [pool.mintA?.address, pool.mintB?.address]) {
+              if (addr && !STABLECOINS.has(addr)) { mints.add(addr); raydiumAdded++ }
+            }
+          }
+          if (pools.length < 100) break  // last page
+        } catch (err: any) {
+          console.warn(`[Movers] External Raydium pools page ${page} error:`, err?.message)
+          break
+        }
+      }
+      if (raydiumAdded > 0) console.log(`[Movers] External: Raydium pools API added ${raydiumAdded} tokens`)
+    }
+
+    // 2. GeckoTerminal trending pools — free, no auth, covers ALL Solana DEXes including old Raydium.
+    //    Paginate 3 pages = up to 60 trending pools (previously only 1 page = 20).
+    {
+      let trendAdded = 0
+      for (let page = 1; page <= 3; page++) {
+        try {
+          const res = await axios.get(`${GECKO_TRENDING_BASE}?page=${page}`, {
+            headers: { Accept: 'application/json' },
+            timeout: 10_000,
+          })
+          const pools: any[] = res.data?.data ?? []
+          for (const pool of pools) {
+            const mint = extractGeckoMint(pool)
+            if (mint) { mints.add(mint); trendAdded++ }
+          }
+          if (pools.length < 20) break  // last page
+        } catch (err: any) {
+          console.warn(`[Movers] External GeckoTerminal trending page ${page} error:`, err?.message)
+          break
+        }
+      }
+      console.log(`[Movers] External: GeckoTerminal trending returned ${trendAdded} tokens`)
+    }
+
+    // 3. GeckoTerminal new pools — recently created Solana pairs across ALL DEXes.
+    //    Catches brand-new tokens immediately after their pool is created on any DEX.
     try {
-      const res = await axios.get(GECKO_TRENDING_URL, {
+      const res = await axios.get(GECKO_NEW_POOLS_URL, {
         headers: { Accept: 'application/json' },
         timeout: 10_000,
       })
-      let added = 0
+      let newAdded = 0
       for (const pool of (res.data?.data ?? [])) {
         const mint = extractGeckoMint(pool)
-        if (mint) { mints.add(mint); added++ }
+        if (mint) { mints.add(mint); newAdded++ }
       }
-      console.log(`[Movers] External: GeckoTerminal trending returned ${added} tokens`)
+      if (newAdded > 0) console.log(`[Movers] External: GeckoTerminal new pools added ${newAdded} tokens`)
     } catch (err: any) {
-      console.warn('[Movers] External GeckoTerminal trending error:', err?.message)
+      console.warn('[Movers] External GeckoTerminal new pools error:', err?.message)
     }
 
-    // 2. GeckoTerminal top-volume pools (pages 1-3 = 60 pools) — h24_volume_usd_desc is
+    // 4. GeckoTerminal top-volume pools (pages 1-3 = 60 pools) — h24_volume_usd_desc is
     //    a confirmed-valid sort. High 24h volume reliably captures active movers on any DEX.
     {
       let volAdded = 0
@@ -583,7 +631,7 @@ export class MoversPoller extends EventEmitter {
       console.log(`[Movers] External: GeckoTerminal volume scan returned ${volAdded} tokens`)
     }
 
-    // 3. Pump.fun coins API — recently-active pump.fun tokens (free, no auth).
+    // 5. Pump.fun coins API — recently-active pump.fun tokens (free, no auth).
     //    Covers tokens still on the bonding curve + recently-graduated.
     try {
       const res = await axios.get(PUMPFUN_COINS_API, {
@@ -613,7 +661,7 @@ export class MoversPoller extends EventEmitter {
       console.warn('[Movers] External pump.fun coins error:', err?.message)
     }
 
-    // 4. DexScreener paid boosts — minor supplement, mostly promoted tokens.
+    // 6. DexScreener paid boosts — minor supplement, mostly promoted tokens.
     try {
       const res = await axios.get(DEX_BOOSTS_API, {
         timeout: 8_000,
@@ -624,7 +672,7 @@ export class MoversPoller extends EventEmitter {
       }
     } catch { /* non-critical */ }
 
-    // 5. Birdeye — only used if API key is configured (paid)
+    // 7. Birdeye — only used if API key is configured (paid)
     if (config.birdeye.apiKey) {
       try {
         const res = await axios.get(BIRDEYE_TOKENLIST_API, {
@@ -689,11 +737,14 @@ export class MoversPoller extends EventEmitter {
     }
   }
 
-  // ── Discovery (5 min) — find new mints via Helius Enhanced Txs ──────────────
-  // Watches two pump.fun programs:
-  //   1. Bonding curve — pre-graduation SWAPs (new/young tokens)
-  //   2. Pump AMM     — post-graduation SWAPs (graduated tokens, any age)
-  // Together they cover every pump.fun token that has traded recently.
+  // ── Discovery — find new mints via Helius Enhanced Txs on all major Solana DEXes ──
+  // Rotates through 4 programs each cycle (one per call) to cover ALL Solana trading:
+  //   0. Pump bonding curve — pre-graduation SWAPs (new/young pump.fun tokens)
+  //   1. Pump AMM (pumpswap) — post-graduation SWAPs (graduated pump.fun tokens, any age)
+  //   2. Raydium AMM V4 — the dominant Solana DEX for non-pump.fun / legacy pairs
+  //   3. Orca Whirlpool — concentrated-liquidity DEX; catches tokens not on Raydium
+  // At the default 20-min POLL_MS, each program is covered once every 80 min.
+  // The external movers scan (every 2 min) keeps enrichment fast between Helius cycles.
 
   private async discover(): Promise<void> {
     if (!this.heliusKey) {
@@ -701,11 +752,15 @@ export class MoversPoller extends EventEmitter {
       console.warn('[Movers] HELIUS_API_KEY not set — skipping discover')
       return
     }
-    // Alternate between programs each cycle to halve Helius Enhanced Tx API credit usage.
-    // Bonding curve (pre-graduation) and AMM (post-graduation) are each covered every 2 cycles.
-    const useAMM = this.discoverFlip
-    this.discoverFlip = !this.discoverFlip
-    await this.fetchRecentMints(useAMM ? PUMP_AMM_STR : PUMP_PROGRAM_STR, useAMM)
+    const programs: Array<{ addr: string; graduated: boolean; label: string }> = [
+      { addr: PUMP_PROGRAM_STR,   graduated: false, label: 'Pump bonding curve' },
+      { addr: PUMP_AMM_STR,       graduated: true,  label: 'Pump AMM'           },
+      { addr: RAYDIUM_AMM_STR,    graduated: true,  label: 'Raydium AMM V4'     },
+      { addr: ORCA_WHIRLPOOL_STR, graduated: true,  label: 'Orca Whirlpool'     },
+    ]
+    const prog = programs[this.discoverIndex % programs.length]
+    this.discoverIndex++
+    await this.fetchRecentMints(prog.addr, prog.graduated)
   }
 
   // ── Enrichment (2 min) — refresh MC/price for all known mints ─────────────
