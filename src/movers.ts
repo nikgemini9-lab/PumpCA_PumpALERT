@@ -356,13 +356,12 @@ export class MoversPoller extends EventEmitter {
   }
 
   /**
-   * Returns ALL coins currently in the $8K-$14K MC band, regardless of age.
+   * Returns coins in the $8K-$14K MC band that are at least 30 days old.
    * Source: tzSnapshot populated by scanTargetZoneCoins() every 10 min.
    *
    * Each entry is enriched with DexScreener/bonding-curve data if the coin is
    * already tracked in `movers`; otherwise falls back to raw pump.fun API data
-   * (MC, age, holders). The frontend UI has client-side age/MC filters so users
-   * can narrow to e.g. ≥30 days themselves.
+   * (MC, age, holders). The frontend UI can still apply additional MC filters.
    */
   getTargetZone(): MoverEntry[] {
     const now = Date.now()
@@ -452,24 +451,30 @@ export class MoversPoller extends EventEmitter {
     const scanFloor = TARGET_ZONE_MIN_MC * 0.4   // $3.2K
     const scanCeil  = TARGET_ZONE_MAX_MC * 3.0   // $42K
 
+    // Fetch SOL price once for fallback MC computation.
+    // pump.fun API sometimes omits usd_market_cap — in that case we compute it
+    // from market_cap (SOL units) × solPrice so the stopping heuristic still works.
+    const solPrice = await getSolPrice()
+
     // ── Strategy: sort by market_cap DESC ────────────────────────────────────
     // Pages from highest MC downward. We collect every coin in the scan window
-    // ($3.2K–$42K). This covers ALL coins in the MC range regardless of age or
-    // trading activity — both dormant coins AND freshly-launched ones that stalled.
+    // ($3.2K–$42K) that is at least TARGET_ZONE_AGE_DAYS old.
     //
     // We do NOT use min/max_market_cap server-side — those params return a fixed
     // cap of ~22 results from pump.fun regardless of pagination. Instead we
-    // filter MC client-side from the usd_market_cap field on each coin.
+    // filter MC client-side from the usd_market_cap field on each coin (with
+    // a market_cap × solPrice fallback when usd_market_cap is absent).
     //
     // Two output paths:
-    //   tzSnapshot  — ALL coins strictly in [TARGET_ZONE_MIN_MC, TARGET_ZONE_MAX_MC]
-    //                 regardless of age. Replaces previous snapshot atomically at end.
+    //   tzSnapshot  — coins strictly in [TARGET_ZONE_MIN_MC, TARGET_ZONE_MAX_MC]
+    //                 AND at least TARGET_ZONE_AGE_DAYS old. Replaces previous
+    //                 snapshot atomically at end.
     //   mintCache   — only 30+ day old coins, for dormant-alert tracking.
     //
     // Stop once an entire page is below the scan floor — no more target coins exist.
     let added = 0
     let pages = 0
-    const freshTz: TzRaw[] = []  // accumulate strict-range coins (any age)
+    const freshTz: TzRaw[] = []  // accumulate strict-range coins (>= 30 days old)
 
     for (let page = 0; page < TARGET_ZONE_SCAN_PAGES; page++) {
       let coins: any[]
@@ -495,19 +500,24 @@ export class MoversPoller extends EventEmitter {
 
       let aboveFloor = 0
       for (const coin of coins) {
-        const mc: number = coin.usd_market_cap ?? 0
+        // Use usd_market_cap when available; fall back to market_cap (SOL) × solPrice.
+        const mc: number = (coin.usd_market_cap > 0)
+          ? coin.usd_market_cap
+          : (coin.market_cap > 0 ? coin.market_cap * solPrice : 0)
         if (mc >= scanFloor) aboveFloor++
 
-        // Collect ALL coins in the strict target band (any age) for tzSnapshot
+        // Collect coins in the strict target band that are old enough for TZ
         if (mc >= TARGET_ZONE_MIN_MC && mc <= TARGET_ZONE_MAX_MC) {
           const mint: string | undefined = coin.mint
-          if (mint && mint !== WSOL) {
+          const createdAt: number = coin.created_timestamp ?? now
+          const ageDays = (now - createdAt) / (24 * 60 * 60_000)
+          if (mint && mint !== WSOL && ageDays >= TARGET_ZONE_AGE_DAYS) {
             freshTz.push({
               mint,
               name:        coin.name   || mint.slice(0, 8),
               symbol:      coin.symbol || '?',
-              createdAt:   coin.created_timestamp ?? now,
-              lastTradeAt: coin.last_trade_timestamp ?? (coin.created_timestamp ?? now),
+              createdAt,
+              lastTradeAt: coin.last_trade_timestamp ?? createdAt,
               pumpfunMc:   mc,
               holderCount: typeof coin.holder_count === 'number' ? coin.holder_count : undefined,
             })

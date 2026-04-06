@@ -470,8 +470,8 @@ export function startServer(
   })
 
   // ── GET /api/target-zone ─────────────────────────────────────────────────
-  // Returns ALL pump.fun coins currently in the $8K-$14K MC range (any age).
-  // Clients apply age/MC filters themselves. Good watchlist for event-driven plays.
+  // Returns pump.fun coins in the $8K-$14K MC range that are ≥30 days old.
+  // Clients may apply additional MC filters. Good watchlist for event-driven plays.
   app.get('/api/target-zone', (req: Request, res: Response) => {
     const status = moversPoller.getStatus()
     const coins  = moversPoller.getTargetZone()
